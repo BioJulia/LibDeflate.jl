@@ -98,8 +98,13 @@ function unsafe_zlib_decompress!(
     iszero(mod(ntoh(header), UInt16(31))) || return LibDeflateErrors.zlib_bad_header_check
 
     # Decompress payload
-    nbytes = unsafe_decompress!(size, decompressor, out_ptr, n_out, ptr, len - 6)
-    nbytes isa LibDeflateError && return nbytes
+    compressed_len = len - 6
+    decomp_result = unsafe_decompress_ex!(
+        size, decompressor, out_ptr, n_out, ptr, compressed_len
+    )
+    decomp_result isa LibDeflateError && return decomp_result
+    consumed, nbytes = decomp_result
+    consumed == compressed_len || return LibDeflateErrors.deflate_bad_payload
 
     # Then check adler32, also stored as big-endian
     exp_adler32 = ntoh(unsafe_load(Ptr{UInt32}(in_ptr) + len - 4))

@@ -46,6 +46,12 @@ zlib_test_data = [
 
     cp[end] = 0x46
     @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_adler32
+
+    trailing_payload = vcat(indata[1:(end - 4)], 0xaa, 0xbb, indata[(end - 3):end])
+    @test zlib_decompress!(decompressor, output, trailing_payload) ==
+        LibDeflateErrors.deflate_bad_payload
+    @test zlib_decompress!(decompressor, output, trailing_payload, 3) ==
+        LibDeflateErrors.deflate_bad_payload
 end
 
 @testset "Compression" begin

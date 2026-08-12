@@ -222,4 +222,11 @@ complex_test_case = vcat(
     res = gzip_decompress!(decompressor, outdata, complex_test_case)
     test_header_example(complex_test_case, res.header)
     @test res.len == 11
+
+    compressed = transcode(GzipCompressor, "trailing payload")
+    trailing_payload = vcat(
+        compressed[1:(end - 8)], 0xaa, 0xbb, compressed[(end - 7):end]
+    )
+    @test gzip_decompress!(decompressor, outdata, trailing_payload) ==
+        LibDeflateErrors.deflate_bad_payload
 end

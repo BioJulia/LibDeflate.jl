@@ -327,7 +327,7 @@ function unsafe_gzip_decompress!(
     length(out_data) < uncompressed_size && resize!(out_data, uncompressed_size)
 
     # Now DEFLATE decompress
-    decomp_result = GC.@preserve out_data unsafe_decompress!(
+    decomp_result = GC.@preserve out_data unsafe_decompress_ex!(
         Base.HasLength(),
         decompressor,
         pointer(out_data),
@@ -336,6 +336,8 @@ function unsafe_gzip_decompress!(
         compressed_len,
     )
     decomp_result isa LibDeflateError && return decomp_result
+    consumed, _ = decomp_result
+    consumed == compressed_len || return LibDeflateErrors.deflate_bad_payload
 
     # Check for CRC checksum and validate it
     crc_exp = ltoh(unsafe_load(Ptr{UInt32}(in_ptr + len - UInt(8))))

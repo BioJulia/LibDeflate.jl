@@ -148,6 +148,7 @@ See also: [`decompress!`](@ref), [`unsafe_decompress!`](@ref)
 """
 mutable struct Decompressor
     actual_nbytes_ret::UInt
+    actual_in_nbytes_ret::UInt
     ptr::Ptr{Nothing}
 end
 
@@ -155,7 +156,7 @@ Base.unsafe_convert(::Type{Ptr{Nothing}}, x::Decompressor) = x.ptr
 
 function Decompressor()
     decompressor = Decompressor(
-        0, ccall((:libdeflate_alloc_decompressor, libdeflate), Ptr{Nothing}, ())
+        0, 0, ccall((:libdeflate_alloc_decompressor, libdeflate), Ptr{Nothing}, ())
     )
     finalizer(free_decompressor, decompressor)
     return decompressor
@@ -206,24 +207,34 @@ end
 # Compression and decompression functions
 
 # Raw C call - do not export this
-function _unsafe_decompress!(
+function _unsafe_decompress_ex!(
         decompressor::Decompressor,
         out_ptr::Ptr,
         out_len::Integer,
         in_ptr::Ptr,
         inlen::Integer,
-        nptr::Ptr,
+        actual_in_nbytes_ret::Ptr,
+        actual_out_nbytes_ret::Ptr,
     )::Union{LibDeflateError, Nothing}
     status = ccall(
-        (:libdeflate_deflate_decompress, libdeflate),
-        Csize_t,
-        (Ptr{Nothing}, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t, Ptr{UInt}),
+        (:libdeflate_deflate_decompress_ex, libdeflate),
+        Cint,
+        (
+            Ptr{Nothing},
+            Ptr{UInt8},
+            Csize_t,
+            Ptr{UInt8},
+            Csize_t,
+            Ptr{Csize_t},
+            Ptr{Csize_t},
+        ),
         decompressor,
         in_ptr,
         inlen,
         out_ptr,
         out_len,
-        nptr,
+        actual_in_nbytes_ret,
+        actual_out_nbytes_ret,
     )
     if status == Cint(1)
         return LibDeflateErrors.deflate_bad_payload
@@ -236,6 +247,60 @@ function _unsafe_decompress!(
     end
 end
 
+# Internal wrapper which additionally returns the number of compressed input
+# bytes consumed. The public raw-DEFLATE API intentionally discards this count.
+function unsafe_decompress_ex!(
+        ::Base.HasLength,
+        decompressor::Decompressor,
+        out_ptr::Ptr,
+        n_out::Integer,
+        in_ptr::Ptr,
+        n_in::Integer,
+    )::Union{LibDeflateError, Tuple{Int, Int}}
+    y = GC.@preserve decompressor begin
+        base_ptr = Ptr{UInt8}(pointer_from_objref(decompressor))
+        actual_in_ptr = Ptr{Csize_t}(
+            base_ptr + fieldoffset(Decompressor, 2)
+        )
+        _unsafe_decompress_ex!(
+            decompressor, out_ptr, n_out, in_ptr, n_in, actual_in_ptr, C_NULL
+        )
+    end
+    return y isa LibDeflateError ?
+        y : (decompressor.actual_in_nbytes_ret % Int, n_out % Int)
+end
+
+function unsafe_decompress_ex!(
+        ::Base.SizeUnknown,
+        decompressor::Decompressor,
+        out_ptr::Ptr,
+        n_out::Integer,
+        in_ptr::Ptr,
+        n_in::Integer,
+    )::Union{LibDeflateError, Tuple{Int, Int}}
+    y = GC.@preserve decompressor begin
+        base_ptr = Ptr{UInt8}(pointer_from_objref(decompressor))
+        actual_out_ptr = Ptr{Csize_t}(
+            base_ptr + fieldoffset(Decompressor, 1)
+        )
+        actual_in_ptr = Ptr{Csize_t}(
+            base_ptr + fieldoffset(Decompressor, 2)
+        )
+        _unsafe_decompress_ex!(
+            decompressor,
+            out_ptr,
+            n_out,
+            in_ptr,
+            n_in,
+            actual_in_ptr,
+            actual_out_ptr,
+        )
+    end
+    return y isa LibDeflateError ?
+        y :
+        (decompressor.actual_in_nbytes_ret % Int, decompressor.actual_nbytes_ret % Int)
+end
+
 """
     unsafe_decompress!(
         s::IteratorSize, ::Decompressor,
@@ -243,8 +308,10 @@ end
         in_ptr::Ptr, n_in::Integer
     )::Union{Int, LibDeflateError}
 
-Decompress `n_in` bytes from `in_ptr` to `out_ptr` using the DEFLATE algorithm,
-returning the number of decompressed bytes or the error encounted.
+Decompress a DEFLATE stream from `in_ptr` to `out_ptr`, reading up to `n_in` bytes,
+and return the number of decompressed bytes or the error encountered. Decompression
+stops at the end of the DEFLATE stream, so a successful call may consume fewer than
+`n_in` input bytes.
 `s` should be whether you know the decompressed size or not.
 
 If `s` isa `Base.HasLength`, the number of decompressed bytes is given as `n_out`.
@@ -265,8 +332,10 @@ function unsafe_decompress!(
         in_ptr::Ptr,
         n_in::Integer,
     )::Union{LibDeflateError, Int}
-    y = _unsafe_decompress!(decompressor, out_ptr, n_out, in_ptr, n_in, C_NULL)
-    return y isa LibDeflateError ? y : Int(n_out)
+    result = unsafe_decompress_ex!(
+        Base.HasLength(), decompressor, out_ptr, n_out, in_ptr, n_in
+    )
+    return result isa LibDeflateError ? result : last(result)
 end
 
 function unsafe_decompress!(
@@ -277,11 +346,10 @@ function unsafe_decompress!(
         in_ptr::Ptr,
         n_in::Integer,
     )::Union{LibDeflateError, Int}
-    y = GC.@preserve decompressor begin
-        retptr = pointer_from_objref(decompressor)
-        _unsafe_decompress!(decompressor, out_ptr, n_out, in_ptr, n_in, retptr)
-    end
-    return y isa LibDeflateError ? y : (decompressor.actual_nbytes_ret % Int)
+    result = unsafe_decompress_ex!(
+        Base.SizeUnknown(), decompressor, out_ptr, n_out, in_ptr, n_in
+    )
+    return result isa LibDeflateError ? result : last(result)
 end
 
 """
@@ -293,6 +361,9 @@ Use the passed `Decompressor` to decompress the data at `in_data` into the
 first bytes of `out_data` using the DEFLATE algorithm,
 returning the number of written bytes to the output, or a `LibDeflateError`.
 Data must fit in `out_data`.
+
+Decompression reads up to `sizeof(in_data)` bytes and stops at the end of the
+DEFLATE stream. A successful call may therefore leave trailing input bytes unread.
 
 If the decompressed size is known beforehand, pass it as `n_out`. This will increase
 performance, but will fail if it is wrong.
