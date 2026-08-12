@@ -95,6 +95,54 @@ end
     @test ex.data == 17:18
 end
 
+@testset "Truncated headers" begin
+    base_header = UInt8[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+    ]
+
+    for len in 0:9
+        @test parse_gzip_header(base_header[1:len]) ==
+            LibDeflateErrors.gzip_header_too_short
+    end
+
+    extra_header = copy(base_header)
+    extra_header[4] = 0x04
+    @test parse_gzip_header(extra_header) == LibDeflateErrors.gzip_header_too_short
+    @test parse_gzip_header(vcat(extra_header, 0x00)) ==
+        LibDeflateErrors.gzip_header_too_short
+
+    # XLEN may be zero, including when it ends exactly at the input boundary.
+    empty_extra = vcat(extra_header, 0x00, 0x00)
+    header_len, header = parse_gzip_header(empty_extra)
+    @test header_len == 12
+    @test isempty(header.extra)
+
+    truncated_extra = vcat(extra_header, 0x04, 0x00, 0x42, 0x43, 0x00)
+    @test parse_gzip_header(truncated_extra) == LibDeflateErrors.gzip_extra_too_long
+
+    for flag in (0x08, 0x10)
+        string_header = copy(base_header)
+        string_header[4] = flag
+        @test parse_gzip_header(string_header) ==
+            LibDeflateErrors.gzip_string_not_null_terminated
+        @test parse_gzip_header(vcat(string_header, codeunits("unterminated"))) ==
+            LibDeflateErrors.gzip_string_not_null_terminated
+    end
+
+    crc_header = copy(base_header)
+    crc_header[4] = 0x02
+    @test parse_gzip_header(crc_header) == LibDeflateErrors.gzip_header_too_short
+    @test parse_gzip_header(vcat(crc_header, 0x00)) ==
+        LibDeflateErrors.gzip_header_too_short
+
+    name_crc_header = copy(base_header)
+    name_crc_header[4] = 0x0a
+    @test parse_gzip_header(vcat(name_crc_header, 0x00)) ==
+        LibDeflateErrors.gzip_header_too_short
+    @test parse_gzip_header(vcat(name_crc_header, 0x00, 0x00)) ==
+        LibDeflateErrors.gzip_header_too_short
+end
+
 
 test_data = [
     "",
@@ -148,6 +196,12 @@ complex_test_case = vcat(
 @testset "Decompression" begin
     decompressor = Decompressor()
     outdata = zeros(UInt8, 5) # begin with small buffer, let it resize
+
+    for len in 0:19
+        @test gzip_decompress!(decompressor, outdata, zeros(UInt8, len)) ==
+            LibDeflateErrors.gzip_header_too_short
+    end
+
     for data in test_data
         compressed = transcode(GzipCompressor, data)
 

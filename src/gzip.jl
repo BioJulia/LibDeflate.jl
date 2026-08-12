@@ -176,7 +176,11 @@ function unsafe_parse_gzip_header(
         # +---+---+=================================+
         # | XLEN  |...XLEN bytes of "extra field"...| (more-->)
         # +---+---+=================================+
+        UInt(index) + UInt(1) <= max_len ||
+            return LibDeflateErrors.gzip_header_too_short
         extra_len = ltoh(unsafe_load(Ptr{UInt16}(ptr + index)))
+        UInt(extra_len) <= max_len - UInt(index) - UInt(1) ||
+            return LibDeflateErrors.gzip_extra_too_long
         extra_vector = if extra_data === nothing
             GzipExtraField[]
         else
@@ -185,7 +189,6 @@ function unsafe_parse_gzip_header(
         extra = parse_fields!(extra_vector, ptr + index + 2, index + UInt32(2), extra_len)
         extra isa LibDeflateError && return extra
         index += extra_len + UInt32(2)
-        (index - one(index)) > max_len && return LibDeflateErrors.gzip_extra_too_long
     end
 
     filename = nothing
@@ -193,10 +196,12 @@ function unsafe_parse_gzip_header(
         # +=========================================+
         # |...original file name, zero-terminated...| (more-->)
         # +=========================================+
-        until_zero = bytes_until_zero(ptr + index, max_len % UInt32)
+        UInt(index) <= max_len ||
+            return LibDeflateErrors.gzip_string_not_null_terminated
+        remaining = max_len - UInt(index) + UInt(1)
+        until_zero = bytes_until_zero(ptr + index, remaining % UInt32)
         until_zero === nothing && return LibDeflateErrors.gzip_string_not_null_terminated
         zero_pos = index + until_zero
-        zero_pos > max_len && return LibDeflateErrors.gzip_string_not_null_terminated
         filename = index:(zero_pos - one(UInt32))
         index = zero_pos + one(UInt32)
     end
@@ -204,10 +209,12 @@ function unsafe_parse_gzip_header(
     # Skip comment
     comment = nothing
     if FLAG_COMMENT
-        until_zero = bytes_until_zero(ptr + index, max_len % UInt32)
+        UInt(index) <= max_len ||
+            return LibDeflateErrors.gzip_string_not_null_terminated
+        remaining = max_len - UInt(index) + UInt(1)
+        until_zero = bytes_until_zero(ptr + index, remaining % UInt32)
         until_zero === nothing && return LibDeflateErrors.gzip_string_not_null_terminated
         zero_pos = index + until_zero
-        zero_pos > max_len && return LibDeflateErrors.gzip_string_not_null_terminated
         comment = index:(zero_pos - one(UInt32))
         index = zero_pos + one(UInt32)
     end
@@ -218,11 +225,12 @@ function unsafe_parse_gzip_header(
         # +---+---+
         # | CRC16 |
         # +---+---+
+        UInt(index) + UInt(1) <= max_len ||
+            return LibDeflateErrors.gzip_header_too_short
         crc_obs_16 = unsafe_crc32(ptr + one(UInt), index - one(UInt)) % UInt16
         crc_exp_16 = ltoh(unsafe_load(Ptr{UInt16}(ptr + index)))
         crc_obs_16 == crc_exp_16 || return LibDeflateErrors.gzip_bad_header_crc16
         index += UInt32(2)
-        index > (max_len + 1) && return LibDeflateErrors.gzip_string_not_null_terminated
     end
 
     return (index - UInt32(1), GzipHeader(mtime, filename, comment, extra))
@@ -300,6 +308,8 @@ function unsafe_gzip_decompress!(
     )::Union{LibDeflateError, GzipDecompressResult}
     # We need to have at least 2 + 4 + 4 bytes left after header
     nonheader_min_len = 2 + 4 + 4
+    len < nonheader_min_len && return LibDeflateErrors.gzip_header_too_short
+    len = UInt(len)
 
     # First decompress header
     hdr_result = unsafe_parse_gzip_header(in_ptr, UInt(len - nonheader_min_len), extra_data)
