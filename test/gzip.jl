@@ -1,8 +1,10 @@
 data_test_cases = [
     [0x42, 0x43, 0x02, 0x00, 0xa1, 0x4c],
     [0x02, 0x03, 0x00, 0x00],
-    [0x00, 0x01, 0x04, 0x00, 0x01, 0x02, 0x03, 0x04,
-    0xff, 0xf1, 0x01, 0x00, 0xff],
+    [
+        0x00, 0x01, 0x04, 0x00, 0x01, 0x02, 0x03, 0x04,
+        0xff, 0xf1, 0x01, 0x00, 0xff,
+    ],
 ]
 
 @testset "Is valid data" begin
@@ -15,7 +17,7 @@ data_test_cases = [
         push!(data, 0x00)
         @test !test_valid(data)
         pop!(data)
-        @test !test_valid(data[1:end-1])
+        @test !test_valid(data[1:(end - 1)])
         data = empty!(copy(data))
         @test test_valid(data)
     end
@@ -25,16 +27,16 @@ end
     test_parse(v) = GC.@preserve v LibDeflate.parse_fields(pointer(v), UInt32(1), UInt16(length(v)))
     for data in data_test_cases
         # We merely test it doesn't fail
-        @test test_parse(data) !== nothing 
+        @test test_parse(data) !== nothing
         data[2] = 0x00
         @test test_parse(data) == LibDeflateErrors.gzip_bad_extra
         data[2] = 0xa0
         push!(data, 0x00)
         @test test_parse(data) == LibDeflateErrors.gzip_extra_too_long
         pop!(data)
-        @test test_parse(data[1:end-1]) == LibDeflateErrors.gzip_extra_too_long
+        @test test_parse(data[1:(end - 1)]) == LibDeflateErrors.gzip_extra_too_long
         data = empty!(copy(data))
-        @test test_parse(data) !== nothing 
+        @test test_parse(data) !== nothing
     end
 end
 
@@ -53,7 +55,7 @@ header_data = UInt8[
     0xce, 0xb1, 0xce, 0xb2, 0xe5, 0xad, 0xa6, 0xe4, 0xb8, 0xad, 0xe6, 0x96, 0x87, 0x00,
 
     # CRC16
-    0x78, 0x18
+    0x78, 0x18,
 ]
 
 function test_header_example(data::Vector{UInt8}, header::LibDeflate.GzipHeader)
@@ -65,7 +67,7 @@ function test_header_example(data::Vector{UInt8}, header::LibDeflate.GzipHeader)
     @test last(header.extra).data === nothing # empty field
     @test String(data[header.filename]) == "filename.fna"
     @test String(data[header.comment]) == "αβ学中文"
-    true
+    return true
 end
 
 @testset "Parse header" begin
@@ -78,12 +80,13 @@ end
     header = GC.@preserve header_data unsafe_parse_gzip_header(pointer(header_data), UInt(51), LibDeflate.GzipExtraField[])[2]
     test_header_example(header_data, header)
 
-    header_data[end-2] = 0x01
+    header_data[end - 2] = 0x01
     @test GC.@preserve header_data unsafe_parse_gzip_header(pointer(header_data), UInt(51)) == LibDeflateErrors.gzip_string_not_null_terminated
-    header_data[end-2] = 0x00
+    header_data[end - 2] = 0x00
 
-    minimal_data = UInt8[0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x10, 0x20
+    minimal_data = UInt8[
+        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x10, 0x20,
     ]
     (header_len, header) = parse_gzip_header(minimal_data)
     @test header_len == 18
@@ -97,7 +100,7 @@ test_data = [
     "",
     "Abracadabra!",
     "En af dem der red med fane",
-    rand(UInt8, 1000)
+    rand(UInt8, 1000),
 ]
 
 test_comment = "This is a comment"
@@ -118,7 +121,7 @@ test_filename = "testfile.foo"
 
         gzip_compress!(
             compressor, outdata, data;
-            comment=test_comment, filename=test_filename, extra=data_test_cases[1], header_crc=false
+            comment = test_comment, filename = test_filename, extra = data_test_cases[1], header_crc = false
         )
         decompressed = transcode(GzipDecompressor, outdata)
         @test decompressed == Vector{UInt8}(data)
@@ -129,16 +132,18 @@ test_filename = "testfile.foo"
 end
 
 
-complex_test_case = vcat(header_data, UInt8[
-    # Data: compressed "Abracadabra"
-    0x01, 0x0b, 0x00, 0xf4, 0xff, 0x41, 0x62, 0x72, 0x61, 0x63, 0x61, 0x64, 0x61, 0x62, 0x72, 0x61,
-    
-    # CRC32
-    0x60, 0x76, 0x76, 0x91,
-    
-    # isize
-    0x0b, 0x00, 0x00, 0x00
-])
+complex_test_case = vcat(
+    header_data, UInt8[
+        # Data: compressed "Abracadabra"
+        0x01, 0x0b, 0x00, 0xf4, 0xff, 0x41, 0x62, 0x72, 0x61, 0x63, 0x61, 0x64, 0x61, 0x62, 0x72, 0x61,
+
+        # CRC32
+        0x60, 0x76, 0x76, 0x91,
+
+        # isize
+        0x0b, 0x00, 0x00, 0x00,
+    ]
+)
 
 @testset "Decompression" begin
     decompressor = Decompressor()

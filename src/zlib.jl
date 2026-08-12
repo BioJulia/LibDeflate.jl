@@ -1,7 +1,7 @@
 # Single-line boxes show the number of bytes, double-lined have
 # a variable number of bytes. E.g. here: 1, 1, N, 4.
 # +---+---+===============+---+---+---+---+
-# |CMF|FLG|COMPRESSED DATA|     ADLER32   |    
+# |CMF|FLG|COMPRESSED DATA|     ADLER32   |
 # +---+---+===============+---+---+---+---+
 
 """
@@ -20,9 +20,9 @@ See also: [`unsafe_zlib_decompress!`](@ref)
 function zlib_decompress! end
 
 function zlib_decompress!(
-    decompressor::Decompressor, output, input
-)::Union{LibDeflateError,Int}
-    GC.@preserve output input begin
+        decompressor::Decompressor, output, input
+    )::Union{LibDeflateError, Int}
+    return GC.@preserve output input begin
         write = WriteableMemory(output)
         read = ReadableMemory(input)
         unsafe_zlib_decompress!(
@@ -37,9 +37,9 @@ function zlib_decompress!(
 end
 
 function zlib_decompress!(
-    decompressor::Decompressor, output, input, n_out::Integer
-)::Union{LibDeflateError,Int}
-    GC.@preserve output input begin
+        decompressor::Decompressor, output, input, n_out::Integer
+    )::Union{LibDeflateError, Int}
+    return GC.@preserve output input begin
         write = WriteableMemory(output)
         read = ReadableMemory(input)
         n_out > sizeof(write) && return LibDeflateErrors.deflate_insufficient_space
@@ -71,13 +71,13 @@ that the payload decompresses to. The latter is faster.
 See also: [`zlib_decompress!`](@ref)
 """
 function unsafe_zlib_decompress!(
-    size::Union{Base.SizeUnknown,Base.HasLength},
-    decompressor::Decompressor,
-    out_ptr::Ptr,
-    n_out::Integer,
-    in_ptr::Ptr,
-    len::Integer,
-)::Union{LibDeflateError,Int}
+        size::Union{Base.SizeUnknown, Base.HasLength},
+        decompressor::Decompressor,
+        out_ptr::Ptr,
+        n_out::Integer,
+        in_ptr::Ptr,
+        len::Integer,
+    )::Union{LibDeflateError, Int}
     # Must be at least 6 bytes in length + compressed
     len < 6 && return LibDeflateErrors.zlib_input_too_short
 
@@ -119,8 +119,8 @@ Return the number of bytes written, or a `LibDeflateError`.
 
 See also: [`unsafe_zlib_compress!`](@ref)
 """
-function zlib_compress!(compressor::Compressor, output, input)::Union{LibDeflateError,Int}
-    GC.@preserve output input begin
+function zlib_compress!(compressor::Compressor, output, input)::Union{LibDeflateError, Int}
+    return GC.@preserve output input begin
         write = WriteableMemory(output)
         read = ReadableMemory(input)
         unsafe_zlib_compress!(
@@ -142,8 +142,8 @@ Return the number of bytes written, or a `LibDeflateError`.
 See also: [`zlib_compress!`](@ref)
 """
 function unsafe_zlib_compress!(
-    compressor::Compressor, out_ptr::Ptr, max_outlen::Integer, in_ptr::Ptr, len::Integer
-)::Union{LibDeflateError,Int}
+        compressor::Compressor, out_ptr::Ptr, max_outlen::Integer, in_ptr::Ptr, len::Integer
+    )::Union{LibDeflateError, Int}
     max_outlen < 6 && return LibDeflateErrors.zlib_insufficient_space
     # Be sure to check that all these 4 results are zero mod 31 when big-endian ordered
     header = if compressor.level == 1

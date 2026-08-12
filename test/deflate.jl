@@ -64,10 +64,16 @@ end
     mem = WriteableMemory([1.0])
     write_mem = WriteableMemory(view([1.0f0], 1:1))
     mem = ReadableMemory("foo")
-    mem = ReadableMemory(view(zeros(Float16, 2, 2), 1:2, 1:2))
     mem = ReadableMemory(SubString("foo", 1:2))
     mem = ReadableMemory(write_mem)
     @test_throws MethodError WriteableMemory(mem)
+
+    # A rectangular view that does not span every row has gaps between columns,
+    # so its logical elements are not contiguous in memory.
+    noncontiguous = view(reshape(UInt8.(1:9), 3, 3), 1:2, 1:2)
+    @test_throws MethodError ReadableMemory(noncontiguous)
+    @test_throws MethodError WriteableMemory(noncontiguous)
+
     @test_throws MethodError compress!(
         compressor, "xxxxxxxxxxxxxxxxxxxxxxxxxx", UInt8[0x01, 0x02]
     )
@@ -79,7 +85,7 @@ end
 @testset "Safe CRC" begin
     for testdata in ["", "foo", "abracadabra!"]
         GC.@preserve testdata @test crc32(collect(codeunits(testdata))) ==
-        crc32(collect(codeunits(testdata))) ==
+            crc32(collect(codeunits(testdata))) ==
             unsafe_crc32(pointer(testdata), ncodeunits(testdata))
     end
 end

@@ -2,8 +2,8 @@ zlib_test_data = [
     UInt8[
         0x78, 0x5e,
         0x01, 0x03, 0x00, 0xfc, 0xff, 0x66, 0x6f, 0x6f,
-        0x02, 0x82, 0x01, 0x45
-    ]
+        0x02, 0x82, 0x01, 0x45,
+    ],
 ]
 
 @testset "Decompression" begin
@@ -15,7 +15,7 @@ zlib_test_data = [
     @test String(output[1:3]) == "foo"
     @test zlib_decompress!(decompressor, output, indata, 3) == 3
     @test String(output[1:3]) == "foo"
-    
+
     @test zlib_decompress!(decompressor, output, indata, 2) == LibDeflateErrors.deflate_insufficient_space
     @test zlib_decompress!(decompressor, output, indata, 4) == LibDeflateErrors.deflate_output_too_short
 
