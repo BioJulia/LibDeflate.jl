@@ -16,6 +16,13 @@ zlib_test_data = [
     @test zlib_decompress!(decompressor, output, indata, 3) == 3
     @test String(output[1:3]) == "foo"
 
+    # The same payload with CINFO=0 declares a valid 256-byte window.
+    small_window = copy(indata)
+    small_window[1:2] = UInt8[0x08, 0x1d]
+    @test zlib_decompress!(decompressor, output, small_window) == 3
+    @test String(output[1:3]) == "foo"
+    @test zlib_decompress!(decompressor, output, small_window, 3) == 3
+
     @test zlib_decompress!(decompressor, output, indata, 2) == LibDeflateErrors.deflate_insufficient_space
     @test zlib_decompress!(decompressor, output, indata, 4) == LibDeflateErrors.deflate_output_too_short
 

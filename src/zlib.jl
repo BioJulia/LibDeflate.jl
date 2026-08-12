@@ -88,8 +88,9 @@ function unsafe_zlib_decompress!(
     # Parse CMF: First 4 bits must be 0x8 = DEFLATE algorithm
     header & 0x000f != 0x0008 && return LibDeflateErrors.zlib_not_deflate
 
-    # Next 4 bits must be 7, as the window size in libdeflate is hardcoded to 32 KiB.
-    header & 0x00f0 != 0x0070 && return LibDeflateErrors.zlib_wrong_window_size
+    # CINFO values 0 through 7 declare window sizes from 256 bytes through 32 KiB.
+    # Values above 7 are not valid for the DEFLATE compression method.
+    header & 0x00f0 > 0x0070 && return LibDeflateErrors.zlib_wrong_window_size
 
     # libdeflate does not support a custom decompression dict, I think
     header & 0x2000 != 0x0000 && return LibDeflateErrors.zlib_needs_compression_dict
