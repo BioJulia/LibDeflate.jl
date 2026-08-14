@@ -218,6 +218,15 @@ complex_test_case = vcat(
         resize!(outdata, 5)
     end
 
+    # RFC 1952 permits concatenated members.  This API deliberately returns
+    # only the first member, leaving the remainder unread.
+    first_member = transcode(GzipCompressor, "first member")
+    second_member = transcode(GzipCompressor, "second member is longer")
+    concatenated = vcat(first_member, second_member)
+    result = gzip_decompress!(decompressor, outdata, concatenated)
+    @test result.len == sizeof("first member")
+    @test outdata == Vector{UInt8}(codeunits("first member"))
+
     # Hard test case
     res = gzip_decompress!(decompressor, outdata, complex_test_case)
     test_header_example(complex_test_case, res.header)

@@ -256,6 +256,8 @@ end
     )::Union{GzipDecompressResult, LibDeflateError}
 
 Gzip decompress the input data into `out`, and resize `out` to fit.
+Only the first gzip member is decompressed; any following members or trailing
+data are left unread.
 
 See also: [`unsafe_gzip_decompress!`](@ref)
 """
@@ -293,6 +295,8 @@ Use the `Decompressor` to decompress gzip data at `in_ptr` and `len` bytes forwa
 into `out_data`. If there is not enough room at `out_data`, resize `out_data`, except
 if it would be bigger than `max_outlen`, in that case return an error.
 If `extra_data` is not `nothing`, reuse the vector by overwriting.
+Only the first gzip member is decompressed; any following members or trailing
+data are left unread.
 
 Return a `GzipDecompressResult`
 
@@ -316,35 +320,47 @@ function unsafe_gzip_decompress!(
     hdr_result isa LibDeflateError && return hdr_result
     header_len, header = hdr_result
 
-    # Skip to end to check crc32 and data len
-    # +---+---+---+---+---+---+---+---+
-    # |     CRC32     |     ISIZE     | END OF FILE
-    # +---+---+---+---+---+---+---+---+
+    # Decompress the first DEFLATE stream.  Its trailer cannot be found from the
+    # end of the input, since another gzip member may follow it, so use
+    # libdeflate's consumed-input count to locate it.
+    max_capacity = min(UInt(max_outlen), UInt(typemax(UInt32)), UInt(typemax(Int)))
+    capacity = min(UInt(length(out_data)), max_capacity)
+    decomp_result = LibDeflateErrors.deflate_insufficient_space
+    while true
+        decomp_result = GC.@preserve out_data unsafe_decompress_ex!(
+            Base.SizeUnknown(),
+            decompressor,
+            pointer(out_data),
+            capacity,
+            in_ptr + header_len,
+            len - header_len,
+        )
+        decomp_result != LibDeflateErrors.deflate_insufficient_space && break
+        capacity == max_capacity && break
 
-    compressed_len = len - UInt(8) - header_len
-    uncompressed_size = ltoh(unsafe_load(Ptr{UInt32}(in_ptr + len - UInt(4))))
-    uncompressed_size > max_outlen && return LibDeflateErrors.deflate_insufficient_space
-    length(out_data) < uncompressed_size && resize!(out_data, uncompressed_size)
-
-    # Now DEFLATE decompress
-    decomp_result = GC.@preserve out_data unsafe_decompress_ex!(
-        Base.HasLength(),
-        decompressor,
-        pointer(out_data),
-        uncompressed_size,
-        in_ptr + header_len,
-        compressed_len,
-    )
+        capacity = iszero(capacity) ? one(UInt) : min(2 * capacity, max_capacity)
+        resize!(out_data, capacity % Int)
+    end
     decomp_result isa LibDeflateError && return decomp_result
-    consumed, _ = decomp_result
-    consumed == compressed_len || return LibDeflateErrors.deflate_bad_payload
+    consumed, uncompressed_size = decomp_result
+
+    # Check this member's trailer rather than the last eight bytes of the input.
+    # +---+---+---+---+---+---+---+---+
+    # |     CRC32     |     ISIZE     | (possibly another member)
+    # +---+---+---+---+---+---+---+---+
+    trailer_offset = UInt(header_len) + UInt(consumed)
+    len - trailer_offset >= UInt(8) || return LibDeflateErrors.gzip_header_too_short
+    trailer_ptr = Ptr{UInt8}(in_ptr) + trailer_offset
+    size_exp = ltoh(unsafe_load(Ptr{UInt32}(trailer_ptr + 4)))
+    size_exp == uncompressed_size % UInt32 ||
+        return LibDeflateErrors.deflate_bad_payload
 
     # Check for CRC checksum and validate it
-    crc_exp = ltoh(unsafe_load(Ptr{UInt32}(in_ptr + len - UInt(8))))
-    crc_obs = GC.@preserve out_data unsafe_crc32(pointer(out_data), uncompressed_size % Int)
+    crc_exp = ltoh(unsafe_load(Ptr{UInt32}(trailer_ptr)))
+    crc_obs = GC.@preserve out_data unsafe_crc32(pointer(out_data), uncompressed_size)
     crc_exp == crc_obs || return LibDeflateErrors.gzip_bad_crc32
 
-    return GzipDecompressResult(uncompressed_size, header)
+    return GzipDecompressResult(uncompressed_size % UInt32, header)
 end
 
 #Computes maximal output length of a gzip compression
