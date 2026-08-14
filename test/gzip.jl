@@ -93,6 +93,19 @@ end
     ex = only(header.extra)
     @test ex.tag == (0x42, 0x43)
     @test ex.data == 17:18
+
+    # Reusing extra-field storage must not retain fields from a previous header.
+    extra_data = LibDeflate.GzipExtraField[]
+    (_, header) = parse_gzip_header(header_data; extra_data)
+    @test header.extra === extra_data
+    @test !isempty(extra_data)
+
+    header_without_extra = UInt8[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+    ]
+    (_, header) = parse_gzip_header(header_without_extra; extra_data)
+    @test header.extra === nothing
+    @test isempty(extra_data)
 end
 
 @testset "Reserved flags" begin

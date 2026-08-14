@@ -173,6 +173,7 @@ function unsafe_parse_gzip_header(
     index = UInt32(11)
 
     extra = nothing
+    extra_data === nothing || empty!(extra_data)
     if FLAG_EXTRA
         # +---+---+=================================+
         # | XLEN  |...XLEN bytes of "extra field"...| (more-->)
