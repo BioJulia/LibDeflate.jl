@@ -191,7 +191,7 @@ Base.unsafe_convert(::Type{Ptr{Nothing}}, x::Compressor) = x.ptr
 function Compressor(compresslevel::Integer = DEFAULT_COMPRESSION_LEVEL)
     compresslevel in 1:12 || throw(ArgumentError("Compresslevel must be in 1:12"))
     ptr = ccall(
-        (:libdeflate_alloc_compressor, libdeflate), Ptr{Nothing}, (Csize_t,), compresslevel
+        (:libdeflate_alloc_compressor, libdeflate), Ptr{Nothing}, (Cint,), compresslevel
     )
     compressor = Compressor(compresslevel, ptr)
     finalizer(free_compressor, compressor)
