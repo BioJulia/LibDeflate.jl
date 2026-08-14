@@ -45,11 +45,11 @@ zlib_test_data = [
     @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_header_check
 
     cp[2] = 0x01
-    @test zlib_decompress!(decompressor, output, indata, 3) == 3
+    @test zlib_decompress!(decompressor, output, cp, 3) == 3
     cp[2] = 0xda
-    @test zlib_decompress!(decompressor, output, indata, 3) == 3
+    @test zlib_decompress!(decompressor, output, cp, 3) == 3
     cp[2] = 0x9c
-    @test zlib_decompress!(decompressor, output, indata, 3) == 3
+    @test zlib_decompress!(decompressor, output, cp, 3) == 3
 
     cp[end] = 0x46
     @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_adler32
