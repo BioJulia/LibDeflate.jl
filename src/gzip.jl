@@ -161,6 +161,7 @@ function unsafe_parse_gzip_header(
     header = ltoh(unsafe_load(Ptr{UInt32}(ptr + 1)))
     header & 0x0000ffff == 0x00008b1f || return LibDeflateErrors.gzip_bad_magic_bytes
     header & 0x00ff0000 == 0x00080000 || return LibDeflateErrors.gzip_not_deflate
+    iszero(header & 0xe0000000) || return LibDeflateErrors.gzip_bad_flags
     FLAG_HCRC = !iszero(header & 0x02000000)
     FLAG_EXTRA = !iszero(header & 0x04000000)
     FLAG_NAME = !iszero(header & 0x08000000)

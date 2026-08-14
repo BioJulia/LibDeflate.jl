@@ -25,8 +25,8 @@ end
     d = Decompressor()
     @test compress!(c, zeros(UInt8, 16), v) == LibDeflateErrors.deflate_insufficient_space
 
-    # Not compressed data
-    @test decompress!(d, zeros(UInt8, 512), rand(UInt8, 32)) ==
+    # BTYPE=3 is reserved, so this is deterministically invalid DEFLATE data.
+    @test decompress!(d, zeros(UInt8, 512), UInt8[0x07]) ==
         LibDeflateErrors.deflate_bad_payload
 
     # Decompressed data too short

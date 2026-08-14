@@ -95,6 +95,17 @@ end
     @test ex.data == 17:18
 end
 
+@testset "Reserved flags" begin
+    base_header = UInt8[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+    ]
+    for reserved_flags in (0x20, 0x40, 0x80, 0xe0)
+        header = copy(base_header)
+        header[4] = reserved_flags
+        @test parse_gzip_header(header) == LibDeflateErrors.gzip_bad_flags
+    end
+end
+
 @testset "Truncated headers" begin
     base_header = UInt8[
         0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
@@ -252,4 +263,8 @@ complex_test_case = vcat(
     )
     @test gzip_decompress!(decompressor, outdata, trailing_payload) ==
         LibDeflateErrors.deflate_bad_payload
+
+    compressed[4] |= 0xe0
+    @test gzip_decompress!(decompressor, outdata, compressed) ==
+        LibDeflateErrors.gzip_bad_flags
 end

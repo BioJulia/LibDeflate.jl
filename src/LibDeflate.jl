@@ -32,6 +32,7 @@ module LibDeflateErrors
         gzip_header_too_short
         gzip_bad_magic_bytes
         gzip_not_deflate
+        gzip_bad_flags
         gzip_string_not_null_terminated
         gzip_null_in_string
         gzip_bad_header_crc16
