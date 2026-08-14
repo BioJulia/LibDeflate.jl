@@ -95,8 +95,9 @@ function unsafe_zlib_decompress!(
     # libdeflate does not support a custom decompression dict, I think
     header & 0x2000 != 0x0000 && return LibDeflateErrors.zlib_needs_compression_dict
 
-    # This is ntoh, because the header checksum is interpreted as a big-endian integer.
-    iszero(mod(ntoh(header), UInt16(31))) || return LibDeflateErrors.zlib_bad_header_check
+    # `header` was normalized as little-endian above so CMF occupies the low byte.
+    # Swap its bytes unconditionally to interpret CMF and FLG as a big-endian integer.
+    iszero(mod(bswap(header), UInt16(31))) || return LibDeflateErrors.zlib_bad_header_check
 
     # Decompress payload
     compressed_len = len - 6
