@@ -416,13 +416,14 @@ function gzip_compress!(
         header_crc::Bool = false,
     )::Union{LibDeflateError, Vector{UInt8}}
     # Resize output to maximal possible length
-    GC.@preserve comment filename extra begin
+    GC.@preserve input comment filename extra begin
+        read = ReadableMemory(input)
         mem_comment = comment === nothing ? nothing : ReadableMemory(comment)
         mem_filename = filename === nothing ? nothing : ReadableMemory(filename)
         mem_extra = extra === nothing ? nothing : ReadableMemory(extra)
 
         maxlen = max_out_len(
-            sizeof(input) % UInt,
+            sizeof(read) % UInt,
             mem_comment === nothing ? UInt(0) : sizeof(mem_comment) % UInt,
             mem_filename === nothing ? UInt(0) : sizeof(mem_filename) % UInt,
             mem_extra === nothing ? UInt16(0) : sizeof(mem_extra) % UInt16,
@@ -432,8 +433,7 @@ function gzip_compress!(
         # We add 8 extra bytes to make sure Libdeflate don't error due to off-by-one errors
         resize!(output, maxlen + 8)
 
-        GC.@preserve output input begin
-            read = ReadableMemory(input)
+        GC.@preserve output begin
             write = WriteableMemory(output)
             n_bytes = unsafe_gzip_compress!(
                 compressor,

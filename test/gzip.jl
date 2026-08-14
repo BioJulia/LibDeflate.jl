@@ -154,6 +154,12 @@ test_data = [
 test_comment = "This is a comment"
 test_filename = "testfile.foo"
 
+struct CustomReadable
+    data::Vector{UInt8}
+end
+
+LibDeflate.ReadableMemory(input::CustomReadable) = ReadableMemory(input.data)
+
 @testset "Compression" begin
     outdata = zeros(UInt8, 1250)
     compressor = Compressor()
@@ -177,6 +183,14 @@ test_filename = "testfile.foo"
         # Resize for next iteration
         resize!(outdata, 1250)
     end
+
+    data = UInt8.(0:99)
+    input = CustomReadable(data)
+    @test sizeof(input) < sizeof(ReadableMemory(input))
+
+    output = UInt8[]
+    @test gzip_compress!(compressor, output, input) === output
+    @test transcode(GzipDecompressor, output) == data
 end
 
 
