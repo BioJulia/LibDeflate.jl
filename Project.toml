@@ -1,13 +1,13 @@
 name = "LibDeflate"
 uuid = "9255714d-24a7-4b30-8ea3-d46a97f7e13b"
 authors = ["Jakob Nybo Nissen <jakobnybonissen@gmail.com>"]
-version = "0.4.3"
+version = "0.4.4"
 
 [deps]
 libdeflate_jll = "46979653-d7f6-5232-b59e-dd310c4598de"
 
 [compat]
-julia = "1"
+julia = "1.6"
 libdeflate_jll = "1"
 
 [extras]
