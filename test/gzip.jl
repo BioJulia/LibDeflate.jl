@@ -165,8 +165,8 @@ LibDeflate.ReadableMemory(input::CustomReadable) = ReadableMemory(input.data)
     compressor = Compressor()
     for data in test_data
         n_bytes = GC.@preserve data outdata unsafe_gzip_compress!(
-            compressor, pointer(outdata), UInt(length(outdata)),
-            pointer(data), UInt(sizeof(data)),
+            compressor, pointer(outdata), UInt32(length(outdata)),
+            pointer(data), UInt32(sizeof(data)),
             LibDeflate.ReadableMemory(test_comment), LibDeflate.ReadableMemory(test_filename),
             nothing, true
         )

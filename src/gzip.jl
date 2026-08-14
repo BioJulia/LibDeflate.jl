@@ -491,7 +491,7 @@ function unsafe_gzip_compress!(
     )::Union{LibDeflateError, Int}
     # Check output len is long enough
     max_out_len(
-        in_len,
+        UInt(in_len),
         comment === nothing ? UInt(0) : sizeof(comment) % UInt,
         filename === nothing ? UInt(0) : sizeof(filename) % UInt,
         if extra === nothing
