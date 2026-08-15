@@ -132,6 +132,19 @@ end
     header = parse_gzip_header(header_without_extra; extra_data).header
     @test header.extra === nothing
     @test isempty(extra_data)
+
+    # Reused output is cleared before validation and therefore also on early errors.
+    sentinel = GzipExtraField((0x01, 0x01), nothing)
+    push!(extra_data, sentinel)
+    @test parse_gzip_header(UInt8[]; extra_data) ==
+        LibDeflateErrors.gzip_header_too_short
+    @test isempty(extra_data)
+    push!(extra_data, sentinel)
+    short_header = header_without_extra[1:9]
+    @test GC.@preserve short_header unsafe_parse_gzip_header(
+        ReadableMemory(short_header), extra_data
+    ) == LibDeflateErrors.gzip_header_too_short
+    @test isempty(extra_data)
 end
 
 @testset "Reserved flags" begin
@@ -311,6 +324,33 @@ complex_test_case = vcat(
     decompressor = Decompressor()
     outdata = zeros(UInt8, 1001)
 
+    sentinel = GzipExtraField((0x01, 0x01), nothing)
+    extra_data = [sentinel]
+    @test gzip_decompress!(decompressor, outdata, UInt8[]; extra_data) ==
+        LibDeflateErrors.gzip_header_too_short
+    @test isempty(extra_data)
+    push!(extra_data, sentinel)
+    empty_input = UInt8[]
+    @test GC.@preserve outdata empty_input unsafe_gzip_decompress!(
+        decompressor, WriteableMemory(outdata), ReadableMemory(empty_input); extra_data
+    ) == LibDeflateErrors.gzip_header_too_short
+    @test isempty(extra_data)
+    push!(extra_data, sentinel)
+    @test gzip_decompress!(
+        decompressor, UInt8[], UInt8[], UInt(1); extra_data
+    ) == LibDeflateErrors.deflate_insufficient_space
+    @test isempty(extra_data)
+    push!(extra_data, sentinel)
+    empty_output = UInt8[]
+    @test GC.@preserve empty_output empty_input unsafe_gzip_decompress!(
+        decompressor,
+        WriteableMemory(empty_output),
+        ReadableMemory(empty_input),
+        UInt(1);
+        extra_data,
+    ) == LibDeflateErrors.deflate_insufficient_space
+    @test isempty(extra_data)
+
     for len in 0:19
         @test gzip_decompress!(decompressor, outdata, zeros(UInt8, len)) ==
             LibDeflateErrors.gzip_header_too_short
@@ -386,6 +426,11 @@ complex_test_case = vcat(
     )
     @test String(custom_output.data[1:result.written]) == "custom output"
 
+    extra_data = [GzipExtraField((0x01, 0x01), nothing)]
+    result = gzip_decompress!(decompressor, outdata, compressed; extra_data)
+    @test result isa GzipDecompressResult
+    @test isempty(extra_data)
+
     compressed = transcode(GzipCompressor, "five bytes")
     small_output = zeros(UInt8, 5)
     original_length = length(small_output)
@@ -429,10 +474,32 @@ end
     expected = Vector{UInt8}(join(parts))
     output = zeros(UInt8, length(expected) + 16)
 
+    sentinel = GzipExtraField((0x01, 0x01), nothing)
+    reused_extra = [sentinel]
+    no_members = GzipDecompressAllResult(
+        (;
+            read = UInt(0), written = UInt(0), members = UInt(0),
+        )
+    )
+    @test gzip_decompress_all!(
+        decompressor, output, UInt8[]; extra_data = reused_extra
+    ) == (no_members, LibDeflateErrors.gzip_header_too_short)
+    @test isempty(reused_extra)
+    push!(reused_extra, sentinel)
+    empty_input = UInt8[]
+    @test GC.@preserve output empty_input unsafe_gzip_decompress_all!(
+        decompressor,
+        WriteableMemory(output),
+        ReadableMemory(empty_input);
+        extra_data = reused_extra,
+    ) == (no_members, LibDeflateErrors.gzip_header_too_short)
+    @test isempty(reused_extra)
+
     result = gzip_decompress_all!(decompressor, output, concatenated)
     @test result.read isa UInt
     @test result.written isa UInt
     @test result.members isa UInt
+    @test result isa GzipDecompressAllResult
     @test fieldtype(GzipDecompressResult, :written) === UInt
     @test fieldtype(GzipDecompressResult, :read) === UInt
     @test result == (;
@@ -468,22 +535,53 @@ end
     @test custom_output.data == expected
 
     @test gzip_decompress_all!(decompressor, UInt8[], UInt8[]) ==
-        LibDeflateErrors.gzip_header_too_short
-    @test gzip_decompress_all!(
+        (no_members, LibDeflateErrors.gzip_header_too_short)
+    insufficient = gzip_decompress_all!(
         decompressor, zeros(UInt8, length(expected) - 1), concatenated
-    ) == LibDeflateErrors.deflate_insufficient_space
+    )
+    @test insufficient == (
+        GzipDecompressAllResult(
+            (;
+                read = UInt(length(members[1]) + length(members[2])),
+                written = UInt(length(parts[1]) + length(parts[2])),
+                members = UInt(2),
+            )
+        ),
+        LibDeflateErrors.deflate_insufficient_space,
+    )
     trailing = vcat(concatenated, 0xaa)
+    completed_all = GzipDecompressAllResult(
+        (;
+            read = UInt(length(concatenated)),
+            written = UInt(length(expected)),
+            members = UInt(3),
+        )
+    )
     @test gzip_decompress_all!(decompressor, output, trailing) ==
-        LibDeflateErrors.gzip_header_too_short
+        (completed_all, LibDeflateErrors.gzip_header_too_short)
     trailing_header = vcat(concatenated, zeros(UInt8, 20))
     @test gzip_decompress_all!(decompressor, output, trailing_header) ==
-        LibDeflateErrors.gzip_bad_magic_bytes
+        (completed_all, LibDeflateErrors.gzip_bad_magic_bytes)
 
     corrupted = copy(concatenated)
     second_end = length(first(members)) + length(members[2])
     corrupted[second_end - 7] ⊻= 0x01
-    @test gzip_decompress_all!(decompressor, output, corrupted) ==
-        LibDeflateErrors.gzip_bad_crc32
+    partial_failure = (
+        GzipDecompressAllResult(
+            (;
+                read = UInt(length(members[1])),
+                written = UInt(length(parts[1])),
+                members = UInt(1),
+            )
+        ),
+        LibDeflateErrors.gzip_bad_crc32,
+    )
+    @test gzip_decompress_all!(decompressor, output, corrupted) == partial_failure
+    @test output[1:partial_failure[1].written] == codeunits(parts[1])
+    unsafe_partial = GC.@preserve output corrupted unsafe_gzip_decompress_all!(
+        decompressor, WriteableMemory(output), ReadableMemory(corrupted)
+    )
+    @test unsafe_partial == partial_failure
 
     prefix_member = transcode(GzipCompressor, "prefix")
     with_extra = vcat(prefix_member, complex_test_case)
@@ -495,4 +593,13 @@ end
     @test length(extra_data) == 2
     @test first(extra_data).data ==
         UInt(length(prefix_member) + 17):UInt(length(prefix_member) + 18)
+
+    # The output describes the final member, so earlier extra fields must not linger.
+    extra_data = [sentinel]
+    with_extra_first = vcat(complex_test_case, prefix_member)
+    result = gzip_decompress_all!(
+        decompressor, output, with_extra_first; extra_data
+    )
+    @test result.members == 2
+    @test isempty(extra_data)
 end

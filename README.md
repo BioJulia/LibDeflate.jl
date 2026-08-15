@@ -34,7 +34,9 @@ When possible, use the safe variants as the overhead is rather small. Raw DEFLAT
 bytes written, so callers can retain trailing input. Gzip decompression similarly reports
 the number of bytes occupied by the first gzip member through `GzipDecompressResult.read`.
 Use `gzip_decompress_all!` when the input must be a complete gzip file and every
-concatenated member should be decoded into one output buffer.
+concatenated member should be decoded into one output buffer. If a later member is
+invalid, it returns `(completed, error)`, where `completed` reports the valid members
+decoded before the error.
 
 All compression and decompression functions ending in `!` write into fixed-size output
 buffers and never resize them. If an output buffer is too small, they return
@@ -49,14 +51,15 @@ instead reports the total number of bytes written for callers to verify.
 For more details on these functions, read their docstrings which define their API.
 Functions and types without a docstring are internal.
 
-Compression, decompression, and data-format errors are returned as `LibDeflateError`
-objects.
+Compression, decompression, and data-format errors are represented by
+`LibDeflateError` objects. Most operations return the error directly;
+`gzip_decompress_all!` also returns the successfully completed prefix alongside it.
 
 __Common exported types__
 * `Decompressor`: Create an object that decompresses using DEFLATE.
 * `Compressor(level::UInt8)`: Create an object that compresses using the given DEFLATE
   level.
-* `LibDeflateError`: An enum will all LibDeflate errors. Functions are either successful or return this.
+* `LibDeflateError`: An enum with all LibDeflate errors.
 * `ReadableMemory`: A pointer and a length. Constructable from types that are pointer-readable.
 * `WriteableMemory`: A pointer and a length. Constructable from types that are pointer-writeable.
 
