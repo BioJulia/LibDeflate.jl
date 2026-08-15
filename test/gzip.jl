@@ -301,7 +301,7 @@ complex_test_case = vcat(
         result = GC.@preserve compressed unsafe_gzip_decompress!(
             decompressor, WriteableMemory(outdata), ReadableMemory(compressed)
         )
-        @test outdata[1:result.len] == expected
+        @test outdata[1:result.written] == expected
         @test result.read == length(compressed)
 
         result = GC.@preserve compressed unsafe_gzip_decompress!(
@@ -310,19 +310,19 @@ complex_test_case = vcat(
             ReadableMemory(compressed),
             length(expected),
         )
-        @test outdata[1:result.len] == expected
+        @test outdata[1:result.written] == expected
         @test result.read == length(compressed)
 
         fill!(outdata, 0x00)
         result = gzip_decompress!(decompressor, outdata, compressed)
-        @test outdata[1:result.len] == expected
+        @test outdata[1:result.written] == expected
         @test result.read == length(compressed)
         @test length(outdata) == 1001
 
         fill!(outdata, 0x00)
         result = gzip_decompress!(decompressor, outdata, compressed, length(expected))
-        @test outdata[1:result.len] == expected
-        @test result.len == length(expected)
+        @test outdata[1:result.written] == expected
+        @test result.written == length(expected)
         @test result.read == length(compressed)
 
         @test gzip_decompress!(
@@ -355,7 +355,7 @@ complex_test_case = vcat(
         CustomReadable(compressed),
         sizeof("custom output"),
     )
-    @test String(custom_output.data[1:result.len]) == "custom output"
+    @test String(custom_output.data[1:result.written]) == "custom output"
 
     compressed = transcode(GzipCompressor, "five bytes")
     small_output = zeros(UInt8, 5)
@@ -370,14 +370,14 @@ complex_test_case = vcat(
     second_member = transcode(GzipCompressor, "second member is longer")
     concatenated = vcat(first_member, second_member)
     result = gzip_decompress!(decompressor, outdata, concatenated)
-    @test result.len == sizeof("first member")
+    @test result.written == sizeof("first member")
     @test result.read == length(first_member)
-    @test outdata[1:result.len] == Vector{UInt8}(codeunits("first member"))
+    @test outdata[1:result.written] == Vector{UInt8}(codeunits("first member"))
 
     # Hard test case
     res = gzip_decompress!(decompressor, outdata, complex_test_case)
     test_header_example(complex_test_case, res.header)
-    @test res.len == 11
+    @test res.written == 11
     @test res.read == length(complex_test_case)
 
     compressed = transcode(GzipCompressor, "trailing payload")
@@ -390,4 +390,69 @@ complex_test_case = vcat(
     compressed[4] |= 0xe0
     @test gzip_decompress!(decompressor, outdata, compressed) ==
         LibDeflateErrors.gzip_bad_flags
+end
+
+@testset "All-member decompression" begin
+    decompressor = Decompressor()
+    parts = ["first member", "", "third member"]
+    members = transcode.(GzipCompressor, parts)
+    concatenated = reduce(vcat, members)
+    expected = Vector{UInt8}(join(parts))
+    output = zeros(UInt8, length(expected) + 16)
+
+    result = gzip_decompress_all!(decompressor, output, concatenated)
+    @test result == (;
+        read = length(concatenated), written = length(expected), members = 3,
+    )
+    @test output[1:result.written] == expected
+    @test length(output) == length(expected) + 16
+
+    single_result = gzip_decompress_all!(decompressor, output, first(members))
+    @test single_result.members == 1
+    @test single_result.written == sizeof(first(parts))
+    empty_result = gzip_decompress_all!(decompressor, UInt8[], members[2])
+    @test empty_result == (; read = length(members[2]), written = 0, members = 1)
+
+    fill!(output, 0x00)
+    result = GC.@preserve output concatenated unsafe_gzip_decompress_all!(
+        decompressor, WriteableMemory(output), ReadableMemory(concatenated)
+    )
+    @test result.members == 3
+    @test output[1:result.written] == expected
+
+    custom_output = CustomWriteable(zeros(UInt8, length(expected)))
+    result = gzip_decompress_all!(
+        decompressor, custom_output, CustomReadable(concatenated)
+    )
+    @test result.written == length(expected)
+    @test custom_output.data == expected
+
+    @test gzip_decompress_all!(decompressor, UInt8[], UInt8[]) ==
+        LibDeflateErrors.gzip_header_too_short
+    @test gzip_decompress_all!(
+        decompressor, zeros(UInt8, length(expected) - 1), concatenated
+    ) == LibDeflateErrors.deflate_insufficient_space
+    trailing = vcat(concatenated, 0xaa)
+    @test gzip_decompress_all!(decompressor, output, trailing) ==
+        LibDeflateErrors.gzip_header_too_short
+    trailing_header = vcat(concatenated, zeros(UInt8, 20))
+    @test gzip_decompress_all!(decompressor, output, trailing_header) ==
+        LibDeflateErrors.gzip_bad_magic_bytes
+
+    corrupted = copy(concatenated)
+    second_end = length(first(members)) + length(members[2])
+    corrupted[second_end - 7] ⊻= 0x01
+    @test gzip_decompress_all!(decompressor, output, corrupted) ==
+        LibDeflateErrors.gzip_bad_crc32
+
+    prefix_member = transcode(GzipCompressor, "prefix")
+    with_extra = vcat(prefix_member, complex_test_case)
+    extra_data = LibDeflate.GzipExtraField[]
+    result = gzip_decompress_all!(
+        decompressor, output, with_extra; extra_data
+    )
+    @test result.members == 2
+    @test length(extra_data) == 2
+    @test first(extra_data).data ==
+        (length(prefix_member) + 17):(length(prefix_member) + 18)
 end

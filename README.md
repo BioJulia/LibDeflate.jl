@@ -26,15 +26,18 @@ When possible, use the safe variants as the overhead is rather small. Raw DEFLAT
 `decompress!` returns a named tuple containing the number of input bytes read and output
 bytes written, so callers can retain trailing input. Gzip decompression similarly reports
 the number of bytes occupied by the first gzip member through `GzipDecompressResult.read`.
+Use `gzip_decompress_all!` when the input must be a complete gzip file and every
+concatenated member should be decoded into one output buffer.
 
 All compression and decompression functions ending in `!` write into fixed-size output
 buffers and never resize them. If an output buffer is too small, they return
 `deflate_insufficient_space`. The `deflate_compress_bound`, `gzip_compress_bound`, and
 `zlib_compress_bound` functions return output sizes that are guaranteed to be sufficient
 for compression. These bound functions take byte counts and compute their results in
-constant time without inspecting input data. Raw DEFLATE, gzip, and zlib decompression
-all provide an optional trailing `n_out` argument for the faster exact-size path, in
-both their safe and unsafe APIs.
+constant time without inspecting input data. The raw DEFLATE, zlib, and single-member
+gzip decompressors provide an optional trailing `n_out` argument for the faster
+exact-size path, in both their safe and unsafe APIs. Multi-member gzip decompression
+instead reports the total number of bytes written for callers to verify.
 
 For more details on these functions, read their docstrings which define their API.
 Functions and types without a docstring are internal.
@@ -56,6 +59,7 @@ __Working with DEFLATE payloads__
 
 __Working with gzip files__
 * `(unsafe_)gzip_decompress!`: Decompress gzip data.
+* `(unsafe_)gzip_decompress_all!`: Decompress all members of a complete gzip file.
 * `(unsafe_)gzip_compress!`: Compress gzip data and/or metadata
 * `gzip_compress_bound`: Get a worst-case compressed size, including metadata.
 

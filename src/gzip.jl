@@ -259,12 +259,12 @@ end
 Result of `LibDeflate`'s gzip decompression.
 
 It has the following fields:
-* `len::UInt32` length of decompressed data
+* `written::UInt32` number of decompressed bytes written
 * `read::UInt32` number of bytes read from input
 * `header::GzipHeader` metadata
 """
 struct GzipDecompressResult
-    len::UInt32 # length of decompressed data
+    written::UInt32 # number of decompressed bytes written
     read::UInt32 # number of bytes read of the stream
     header::GzipHeader
 end
@@ -410,6 +410,106 @@ function _unsafe_gzip_decompress!(
 
     total_read = trailer_offset + UInt(8)
     return GzipDecompressResult(uncompressed_size % UInt32, total_read % UInt32, header)
+end
+
+"""
+    gzip_decompress_all!(
+        ::Decompressor, output, input; extra_data=nothing
+    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int, members::Int}}
+
+Decompress every member of a gzip file in `input` into the fixed-size buffer `output`.
+The input must contain at least one complete member and no trailing data. Return
+`LibDeflate.deflate_insufficient_space` if the decompressed data does not fit.
+
+On success, return the total input bytes read, output bytes written, and members decoded.
+If `extra_data` is not `nothing`, reuse it while parsing each header; after success it
+contains the extra fields from the final member, with data ranges indexed into the full
+`input`. Custom input and output types can opt in by implementing `ReadableMemory(input)`
+and `WriteableMemory(output)`, respectively.
+
+See also: [`gzip_decompress!`](@ref), [`unsafe_gzip_decompress_all!`](@ref)
+"""
+function gzip_decompress_all!(
+        decompressor::Decompressor,
+        output,
+        input;
+        extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
+    )::Union{
+        LibDeflateError,
+        @NamedTuple{read::Int, written::Int, members::Int},
+    }
+    return GC.@preserve input output begin
+        unsafe_gzip_decompress_all!(
+            decompressor,
+            WriteableMemory(output),
+            ReadableMemory(input);
+            extra_data,
+        )
+    end
+end
+
+"""
+    unsafe_gzip_decompress_all!(
+        ::Decompressor, output::WriteableMemory, input::ReadableMemory;
+        extra_data=nothing
+    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int, members::Int}}
+
+Unsafe variant of [`gzip_decompress_all!`](@ref). Decompress every member of a gzip file
+in `input` into `output`. The input must contain at least one complete member and no
+trailing data.
+
+`sizeof(output)` is the available capacity. The referenced memory must remain valid for
+the duration of the call.
+
+If `extra_data` is not `nothing`, reuse it while parsing each header; after success it
+contains the extra fields from the final member, with data ranges indexed into the full
+`input`.
+"""
+function unsafe_gzip_decompress_all!(
+        decompressor::Decompressor,
+        output::WriteableMemory,
+        input::ReadableMemory;
+        extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
+    )::Union{
+        LibDeflateError,
+        @NamedTuple{read::Int, written::Int, members::Int},
+    }
+    input_size = sizeof(input)
+    output_size = sizeof(output)
+    read = 0
+    written = 0
+    members = 0
+
+    while read < input_size || iszero(members)
+        member_input = ReadableMemory(
+            pointer(input) + read, (input_size - read) % UInt
+        )
+        member_output = WriteableMemory(
+            pointer(output) + written, (output_size - written) % UInt
+        )
+        result = _unsafe_gzip_decompress!(
+            Base.SizeUnknown(), decompressor, member_output, member_input, extra_data
+        )
+        result isa LibDeflateError && return result
+
+        if extra_data !== nothing && result.header.extra !== nothing && !iszero(read)
+            member_offset = read % UInt32
+            for index in eachindex(extra_data)
+                field = extra_data[index]
+                data = field.data
+                data === nothing && continue
+                extra_data[index] = GzipExtraField(
+                    field.tag, (first(data) + member_offset):(last(data) + member_offset)
+                )
+            end
+        end
+
+        read += result.read
+        written += result.written
+        members += 1
+    end
+
+    return (; read, written, members)
 end
 
 function _gzip_wrapper_size(
