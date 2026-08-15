@@ -9,8 +9,6 @@ Libdeflate is a heavily optimized implementation of the DEFLATE compression algo
 
 This package provides simple functionality for working with raw DEFLATE payloads, zlib and gzip data. It is intended for internal use by other packages, not to be used directly by users. Hence, its interface is somewhat small.
 
-:warning: This package ONLY works with in-memory buffers, and ONLY buffers with a length < 2^32 bytes :warning: 
-
 ### Interface
 Many functions have a "safe" and an "unsafe" variant. Unsafe variants accept
 `ReadableMemory` and `WriteableMemory`, which are simple pointer-and-length wrappers.
@@ -21,6 +19,15 @@ outputs, `WriteableMemory(::MyType)`.
 Built-in array conversions are limited to contiguous dense arrays of integer or IEEE
 floating-point elements; arbitrary bitstypes may contain padding and require an explicit
 opt-in constructor.
+
+Buffer lengths, byte offsets, byte counts, and count results use native `UInt`, matching
+libdeflate's `size_t` interface. APIs that accept counts require that concrete type; a
+nonnegative `length` or `sizeof` result can be converted without a range check using
+`n % UInt`. In accordance with Base conventions, `sizeof(::ReadableMemory)` and
+`sizeof(::WriteableMemory)` still return `Int`.
+
+Narrower unsigned types identify actual format limits: checksum values and gzip wire
+fields use `UInt32`, gzip XLEN values use `UInt16`, and compression levels use `UInt8`.
 
 When possible, use the safe variants as the overhead is rather small. Raw DEFLATE
 `decompress!` returns a named tuple containing the number of input bytes read and output
@@ -43,11 +50,12 @@ For more details on these functions, read their docstrings which define their AP
 Functions and types without a docstring are internal.
 
 Compression, decompression, and data-format errors are returned as `LibDeflateError`
-objects. Compression-bound functions throw `ArgumentError` for negative byte counts.
+objects.
 
 __Common exported types__
 * `Decompressor`: Create an object that decompresses using DEFLATE.
-* `Compressor(N)`: Create an object that compresses using DEFLATE level `N`.
+* `Compressor(level::UInt8)`: Create an object that compresses using the given DEFLATE
+  level.
 * `LibDeflateError`: An enum will all LibDeflate errors. Functions are either successful or return this.
 * `ReadableMemory`: A pointer and a length. Constructable from types that are pointer-readable.
 * `WriteableMemory`: A pointer and a length. Constructable from types that are pointer-writeable.

@@ -58,7 +58,7 @@ end # module
 
 using .LibDeflateErrors
 
-const DEFAULT_COMPRESSION_LEVEL = 6
+const DEFAULT_COMPRESSION_LEVEL = UInt8(6)
 
 """
     WriteableMemory
@@ -97,7 +97,7 @@ end
 # `pointer` and `sizeof` are correct (unlike e.g. subarrays with non-1-strides),
 # and where all bitpatterns are legal values.
 function WriteableMemory(x::DenseArray{T}) where {T <: Union{BitInteger, IEEEFloat}}
-    return WriteableMemory(pointer(x), sizeof(x))
+    return WriteableMemory(pointer(x), sizeof(x) % UInt)
 end
 
 function WriteableMemory(
@@ -108,7 +108,7 @@ function WriteableMemory(
         P,
         I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
     }
-    return WriteableMemory(pointer(x), sizeof(x))
+    return WriteableMemory(pointer(x), sizeof(x) % UInt)
 end
 WriteableMemory(x::WriteableMemory) = x
 
@@ -144,7 +144,7 @@ struct ReadableMemory
 end
 
 function ReadableMemory(x::DenseArray{T}) where {T <: Union{BitInteger, IEEEFloat}}
-    return ReadableMemory(pointer(x), sizeof(x))
+    return ReadableMemory(pointer(x), sizeof(x) % UInt)
 end
 
 function ReadableMemory(
@@ -155,18 +155,18 @@ function ReadableMemory(
         P,
         I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
     }
-    return ReadableMemory(pointer(x), sizeof(x))
+    return ReadableMemory(pointer(x), sizeof(x) % UInt)
 end
 
 function ReadableMemory(x::Union{String, SubString{String}})
-    return ReadableMemory(pointer(x), sizeof(x))
+    return ReadableMemory(pointer(x), sizeof(x) % UInt)
 end
 
-ReadableMemory(x::WriteableMemory) = ReadableMemory(pointer(x), sizeof(x))
+ReadableMemory(x::WriteableMemory) = ReadableMemory(pointer(x), x.len)
 ReadableMemory(x::ReadableMemory) = x
 
 Base.pointer(x::Union{ReadableMemory, WriteableMemory})::Ptr{Nothing} = x.ptr
-Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = x.len % Int
+Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = Int(x.len)
 
 # Must be mutable for the GC to be able to interact with it
 """
@@ -182,20 +182,22 @@ the same decompressor in memory rather than making one for each block.
 See also: [`decompress!`](@ref), [`unsafe_decompress!`](@ref)
 """
 mutable struct Decompressor
+    const ptr::Ptr{Nothing}
     actual_nbytes_ret::UInt
     actual_in_nbytes_ret::UInt
-    ptr::Ptr{Nothing}
+
+    function Decompressor()
+        decompressor = new(
+            ccall((:libdeflate_alloc_decompressor, libdeflate), Ptr{Nothing}, ()),
+            zero(UInt),
+            zero(UInt),
+        )
+        finalizer(free_decompressor, decompressor)
+        return decompressor
+    end
 end
 
 Base.unsafe_convert(::Type{Ptr{Nothing}}, x::Decompressor) = x.ptr
-
-function Decompressor()
-    decompressor = Decompressor(
-        0, 0, ccall((:libdeflate_alloc_decompressor, libdeflate), Ptr{Nothing}, ())
-    )
-    finalizer(free_decompressor, decompressor)
-    return decompressor
-end
 
 function free_decompressor(decompressor::Decompressor)
     ccall(
@@ -205,7 +207,7 @@ function free_decompressor(decompressor::Decompressor)
 end
 
 """
-    Compressor(compresslevel::Int=$(DEFAULT_COMPRESSION_LEVEL))
+    Compressor(compresslevel::UInt8=$(DEFAULT_COMPRESSION_LEVEL))
 
 Create an object which can compress using the DEFLATE algorithm. `compresslevel`
 can be from 1 (fast) to 12 (slow), and defaults to $(DEFAULT_COMPRESSION_LEVEL).
@@ -217,21 +219,25 @@ the same compressor in memory rather than making one for each block.
 See also: [`compress!`](@ref), [`unsafe_compress!`](@ref)
 """
 mutable struct Compressor
-    level::Int
-    ptr::Ptr{Nothing}
+    const ptr::Ptr{Nothing}
+    const level::UInt8
+
+    function Compressor(compresslevel::UInt8 = DEFAULT_COMPRESSION_LEVEL)
+        compresslevel in UInt8(1):UInt8(12) ||
+            throw(ArgumentError("Compresslevel must be in 1:12"))
+        ptr = ccall(
+            (:libdeflate_alloc_compressor, libdeflate),
+            Ptr{Nothing},
+            (Cint,),
+            compresslevel % Cint,
+        )
+        compressor = new(ptr, compresslevel)
+        finalizer(free_compressor, compressor)
+        return compressor
+    end
 end
 
 Base.unsafe_convert(::Type{Ptr{Nothing}}, x::Compressor) = x.ptr
-
-function Compressor(compresslevel::Integer = DEFAULT_COMPRESSION_LEVEL)
-    compresslevel in 1:12 || throw(ArgumentError("Compresslevel must be in 1:12"))
-    ptr = ccall(
-        (:libdeflate_alloc_compressor, libdeflate), Ptr{Nothing}, (Cint,), compresslevel
-    )
-    compressor = Compressor(compresslevel, ptr)
-    finalizer(free_compressor, compressor)
-    return compressor
-end
 
 # Called by the garbage collecter, do not use manually
 function free_compressor(compressor::Compressor)
@@ -263,9 +269,9 @@ function _unsafe_decompress!(
         ),
         decompressor,
         pointer(in),
-        sizeof(in),
+        in.len,
         pointer(out),
-        sizeof(out),
+        out.len,
         actual_in_nbytes_ret,
         actual_out_nbytes_ret,
     )
@@ -285,11 +291,11 @@ function _unsafe_decompress!(
         decompressor::Decompressor,
         out::WriteableMemory,
         in::ReadableMemory,
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     y = GC.@preserve decompressor begin
         base_ptr = Ptr{UInt8}(pointer_from_objref(decompressor))
         actual_in_ptr = Ptr{Csize_t}(
-            base_ptr + fieldoffset(Decompressor, 2)
+            base_ptr + fieldoffset(Decompressor, 3)
         )
         _unsafe_decompress!(
             decompressor, out, in, actual_in_ptr, C_NULL
@@ -298,15 +304,15 @@ function _unsafe_decompress!(
     return if y isa LibDeflateError
         y
     else
-        (; read = decompressor.actual_in_nbytes_ret % Int, written = sizeof(out))
+        (; read = decompressor.actual_in_nbytes_ret, written = out.len)
     end
 end
 
 """
     unsafe_decompress!(
         ::Decompressor, output::WriteableMemory, input::ReadableMemory,
-        [n_out::Integer]
-    )::Union{@NamedTuple{read::Int, written::Int}, LibDeflateError}
+        [n_out::UInt]
+    )::Union{@NamedTuple{read::UInt, written::UInt}, LibDeflateError}
 
 Decompress a DEFLATE stream, reading up to `sizeof(input)` compressed bytes and
 writing into `output`. Reading stops at the end of the DEFLATE stream, even if fewer
@@ -327,7 +333,7 @@ function unsafe_decompress!(
         decompressor::Decompressor,
         output::WriteableMemory,
         input::ReadableMemory,
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     return _unsafe_decompress!(Base.SizeUnknown(), decompressor, output, input)
 end
 
@@ -335,17 +341,17 @@ function unsafe_decompress!(
         decompressor::Decompressor,
         output::WriteableMemory,
         input::ReadableMemory,
-        n_out::Integer,
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
-    sizeof(output) < n_out && return LibDeflateErrors.deflate_insufficient_space
-    exact_output = WriteableMemory(pointer(output), n_out % UInt)
+        n_out::UInt,
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
+    output.len < n_out && return LibDeflateErrors.deflate_insufficient_space
+    exact_output = WriteableMemory(pointer(output), n_out)
     return _unsafe_decompress!(Base.HasLength(), decompressor, exact_output, input)
 end
 
 """
     decompress!(
-        ::Decompressor, output, input, [n_out::Integer]
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
+        ::Decompressor, output, input, [n_out::UInt]
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
 
 Decompress a DEFLATE payload from the beginning of `input` and write decompressed
 data to the beginning of `output`. On success, return the number of bytes read and
@@ -358,7 +364,9 @@ an error if the size is incorrect.
 Custom input and output types can opt in by implementing `ReadableMemory(input)`
 and `WriteableMemory(output)`, respectively.
 """
-function decompress!(decompressor::Decompressor, output, input, n_out::Integer)
+function decompress!(
+        decompressor::Decompressor, output, input, n_out::UInt
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     return GC.@preserve output input begin
         _decompress!(decompressor, WriteableMemory(output), ReadableMemory(input), n_out)
     end
@@ -368,12 +376,14 @@ function _decompress!(
         decompressor::Decompressor,
         output::WriteableMemory,
         input::ReadableMemory,
-        n_out::Integer,
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
+        n_out::UInt,
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     return unsafe_decompress!(decompressor, output, input, n_out)
 end
 
-function decompress!(decompressor::Decompressor, output, input)
+function decompress!(
+        decompressor::Decompressor, output, input
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     return GC.@preserve output input begin
         _decompress!(decompressor, WriteableMemory(output), ReadableMemory(input))
     end
@@ -381,7 +391,7 @@ end
 
 function _decompress!(
         decompressor::Decompressor, output::WriteableMemory, input::ReadableMemory
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     return unsafe_decompress!(decompressor, output, input)
 end
 
@@ -390,14 +400,14 @@ function _unsafe_decompress!(
         decompressor::Decompressor,
         out::WriteableMemory,
         in::ReadableMemory,
-    )::Union{LibDeflateError, @NamedTuple{read::Int, written::Int}}
+    )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     y = GC.@preserve decompressor begin
         base_ptr = Ptr{UInt8}(pointer_from_objref(decompressor))
         actual_out_ptr = Ptr{Csize_t}(
-            base_ptr + fieldoffset(Decompressor, 1)
+            base_ptr + fieldoffset(Decompressor, 2)
         )
         actual_in_ptr = Ptr{Csize_t}(
-            base_ptr + fieldoffset(Decompressor, 2)
+            base_ptr + fieldoffset(Decompressor, 3)
         )
         _unsafe_decompress!(
             decompressor,
@@ -411,14 +421,14 @@ function _unsafe_decompress!(
         y
     else
         (;
-            read = decompressor.actual_in_nbytes_ret % Int,
-            written = decompressor.actual_nbytes_ret % Int,
+            read = decompressor.actual_in_nbytes_ret,
+            written = decompressor.actual_nbytes_ret,
         )
     end
 end
 
 """
-    deflate_compress_bound(compressor::Compressor, input_size::Int)::Int
+    deflate_compress_bound(compressor::Compressor, input_size::UInt)::UInt
 
 Return a worst-case upper bound on the number of bytes produced by
 [`compress!`](@ref) when compressing `input_size` bytes with `compressor`.
@@ -427,21 +437,20 @@ The bound may overestimate the required space, but an output buffer of this size
 guaranteed to be sufficient. This calculation does not inspect any input data and is
 constant-time with respect to `input_size`.
 """
-function deflate_compress_bound(compressor::Compressor, input_size::Int)::Int
-    input_size >= 0 || throw(ArgumentError("input_size must be nonnegative"))
+function deflate_compress_bound(compressor::Compressor, input_size::UInt)::UInt
     return ccall(
         (:libdeflate_deflate_compress_bound, libdeflate),
         Csize_t,
         (Ptr{Nothing}, Csize_t),
         compressor,
         input_size,
-    ) % Int
+    )
 end
 
 """
     unsafe_compress!(
         ::Compressor, out::WriteableMemory, in::ReadableMemory
-    )::Union{Int, LibDeflateError}
+    )::Union{UInt, LibDeflateError}
 
 Use the passed `Compressor` to compress the bytes in `in` into `out`.
 
@@ -451,23 +460,23 @@ See also: [`compress!`](@ref)
 """
 function unsafe_compress!(
         compressor::Compressor, out::WriteableMemory, in::ReadableMemory
-    )::Union{LibDeflateError, Int}
+    )::Union{LibDeflateError, UInt}
     bytes = ccall(
         (:libdeflate_deflate_compress, libdeflate),
         Csize_t,
         (Ptr{Nothing}, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t),
         compressor,
         pointer(in),
-        sizeof(in),
+        in.len,
         pointer(out),
-        sizeof(out),
+        out.len,
     )
     iszero(bytes) && return LibDeflateErrors.deflate_insufficient_space
-    return bytes % Int
+    return bytes
 end
 
 """
-    compress!(::Compressor, output, input)::Union{LibDeflateError, Int}
+    compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
 Compress `input` as a DEFLATE payload into the beginning of `output`, returning
 the number of bytes written or a `LibDeflateError`.
@@ -475,7 +484,7 @@ the number of bytes written or a `LibDeflateError`.
 Custom input and output types can opt in by implementing `ReadableMemory(input)`
 and `WriteableMemory(output)`, respectively.
 """
-function compress!(compressor::Compressor, output, input)
+function compress!(compressor::Compressor, output, input)::Union{LibDeflateError, UInt}
     return GC.@preserve output input begin
         unsafe_compress!(compressor, WriteableMemory(output), ReadableMemory(input))
     end
@@ -490,14 +499,14 @@ in the Julia standard library.
 
 See also: [`crc32`](@ref)
 """
-function unsafe_crc32(in::ReadableMemory, start::UInt32 = UInt32(0))
+function unsafe_crc32(in::ReadableMemory, start::UInt32 = UInt32(0))::UInt32
     return ccall(
         (:libdeflate_crc32, libdeflate),
         UInt32,
         (UInt32, Ptr{UInt8}, Csize_t),
         start,
         pointer(in),
-        sizeof(in),
+        in.len,
     )
 end
 
@@ -506,7 +515,7 @@ end
 
 Calculate the CRC-32 checksum of `data` with seed `start`.
 """
-function crc32(data, start::UInt32 = UInt32(0))
+function crc32(data, start::UInt32 = UInt32(0))::UInt32
     return GC.@preserve data unsafe_crc32(ReadableMemory(data), start)
 end
 
@@ -518,14 +527,14 @@ with seed `start` (default is 1).
 
 See also: [`adler32`](@ref)
 """
-function unsafe_adler32(in::ReadableMemory, start::UInt32 = UInt32(1))
+function unsafe_adler32(in::ReadableMemory, start::UInt32 = UInt32(1))::UInt32
     return ccall(
         (:libdeflate_adler32, libdeflate),
         UInt32,
         (UInt32, Ptr{UInt8}, Csize_t),
         start,
         pointer(in),
-        sizeof(in),
+        in.len,
     )
 end
 
@@ -534,7 +543,7 @@ end
 
 Calculate the Adler-32 checksum of `data` with seed `start`.
 """
-function adler32(data, start::UInt32 = UInt32(1))
+function adler32(data, start::UInt32 = UInt32(1))::UInt32
     return GC.@preserve data unsafe_adler32(ReadableMemory(data), start)
 end
 

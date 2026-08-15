@@ -15,7 +15,15 @@
     end
 
     c = Compressor()
-    @test c.level == Compressor(6).level
+    @test c.level == Compressor(UInt8(6)).level
+    @test c.level isa UInt8
+    @test fieldtype(Compressor, :level) === UInt8
+    @test fieldtype(Decompressor, :actual_nbytes_ret) === UInt
+    @test fieldtype(Decompressor, :actual_in_nbytes_ret) === UInt
+    @test LibDeflate.DEFAULT_COMPRESSION_LEVEL isa UInt8
+    @test_throws MethodError Compressor(6)
+    @test_throws ArgumentError Compressor(UInt8(0))
+    @test_throws ArgumentError Compressor(UInt8(13))
 end
 
 @testset "Errors" begin
@@ -33,14 +41,15 @@ end
     v = zeros(UInt8, 256)
     bytes = compress!(c, v, Vector{UInt8}("ABC"^51))
     compressed = v[1:bytes]
-    @test decompress!(d, zeros(UInt8, 1024), compressed, 150) ==
+    @test decompress!(d, zeros(UInt8, 1024), compressed, UInt(150)) ==
         LibDeflateErrors.deflate_insufficient_space
 
     # Decompressed data too long
     @test decompress!(d, zeros(UInt8, 32), compressed) ==
         LibDeflateErrors.deflate_insufficient_space
-    @test decompress!(d, zeros(UInt8, 1024), compressed, 160) ==
+    @test decompress!(d, zeros(UInt8, 1024), compressed, UInt(160)) ==
         LibDeflateErrors.deflate_output_too_short
+    @test_throws MethodError decompress!(d, zeros(UInt8, 1024), compressed, 160)
 end
 
 @testset "Compression" begin
@@ -54,18 +63,24 @@ end
     for i in COMPRESSIBLE
         GC.@preserve i v = unsafe_wrap(Array, Ptr{UInt8}(pointer(i)), sizeof(i))
         compressor = Compressor()
-        bound = deflate_compress_bound(compressor, sizeof(v))
+        bound = deflate_compress_bound(compressor, UInt(sizeof(v)))
         @test bound >= sizeof(v)
-        @test compress!(compressor, zeros(UInt8, bound), v) isa Int
+        @test bound isa UInt
+        @test compress!(compressor, zeros(UInt8, bound), v) isa UInt
         bytes = compress!(compressor, outbuffer, v)
         @test bytes < length(v)
     end
 
     input = CustomReadable(Vector{UInt8}("custom bound input"))
     compressor = Compressor()
-    bound = deflate_compress_bound(compressor, sizeof(input.data))
-    @test compress!(compressor, zeros(UInt8, bound), input) isa Int
-    @test_throws ArgumentError deflate_compress_bound(compressor, -1)
+    bound = deflate_compress_bound(compressor, UInt(sizeof(input.data)))
+    @test compress!(compressor, zeros(UInt8, bound), input) isa UInt
+    @test_throws MethodError deflate_compress_bound(compressor, 1)
+
+    if Sys.WORD_SIZE > 32
+        large_input_size = UInt(typemax(UInt32)) + one(UInt)
+        @test deflate_compress_bound(compressor, large_input_size) > typemax(UInt32)
+    end
 end
 
 @testset "Memory" begin
@@ -78,8 +93,19 @@ end
     mem = ReadableMemory(write_mem)
     @test_throws MethodError WriteableMemory(mem)
     @test pointer(mem) isa Ptr{Nothing}
+    @test mem.len isa UInt
+    @test fieldtype(ReadableMemory, :len) === UInt
+    @test fieldtype(WriteableMemory, :len) === UInt
     @test sizeof(mem) isa Int
     @test sizeof(mem) >= 0
+    @test_throws InexactError sizeof(ReadableMemory(C_NULL, UInt(typemax(Int)) + one(UInt)))
+
+    if Sys.WORD_SIZE > 32
+        large_len = UInt(typemax(UInt32)) + one(UInt)
+        large_mem = ReadableMemory(C_NULL, large_len)
+        @test large_mem.len == large_len
+        @test sizeof(large_mem) == Int(large_len)
+    end
 
     # A rectangular view that does not span every row has gaps between columns,
     # so its logical elements are not contiguous in memory.
@@ -100,7 +126,7 @@ end
     input = CustomReadable(Vector{UInt8}("custom memory"))
     compressed = CustomWriteable(zeros(UInt8, 128))
     n_compressed = compress!(compressor, compressed, input)
-    @test n_compressed isa Int
+    @test n_compressed isa UInt
 
     output = CustomWriteable(zeros(UInt8, 128))
     result = decompress!(
@@ -108,7 +134,7 @@ end
         output,
         CustomReadable(compressed.data[1:n_compressed]),
     )
-    @test result == (; read = n_compressed, written = sizeof(input.data))
+    @test result == (; read = n_compressed, written = UInt(sizeof(input.data)))
     @test output.data[1:result.written] == input.data
 end
 
@@ -156,21 +182,21 @@ end
             d_bytes_unsafe1 = unsafe_decompress!(
                 decompressor,
                 WriteableMemory(unsafe_backbuffer1),
-                ReadableMemory(pointer(unsafe_outbuffer), c_bytes_unsafe % UInt),
-                length(v),
+                ReadableMemory(pointer(unsafe_outbuffer), c_bytes_unsafe),
+                UInt(length(v)),
             )
 
             d_bytes_unsafe2 = unsafe_decompress!(
                 decompressor,
                 WriteableMemory(unsafe_backbuffer2),
-                ReadableMemory(pointer(unsafe_outbuffer), c_bytes_unsafe % UInt),
+                ReadableMemory(pointer(unsafe_outbuffer), c_bytes_unsafe),
             )
         end
 
-        d_bytes_safe1 = decompress!(decompressor, backbuffer1, outbuffer, length(v))
+        d_bytes_safe1 = decompress!(decompressor, backbuffer1, outbuffer, UInt(length(v)))
         d_bytes_safe2 = decompress!(decompressor, backbuffer2, outbuffer)
 
-        expected = (; read = c_bytes_unsafe, written = length(v))
+        expected = (; read = c_bytes_unsafe, written = UInt(length(v)))
         @test d_bytes_safe1 == d_bytes_safe2 == d_bytes_unsafe1 == d_bytes_unsafe2 == expected
 
         @test v ==

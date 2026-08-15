@@ -11,15 +11,17 @@ zlib_test_data = [
     decompressor = Decompressor()
     output = zeros(UInt8, 128)
 
-    @test zlib_decompress!(decompressor, output, indata) == 3
+    result = zlib_decompress!(decompressor, output, indata)
+    @test result == 3
+    @test result isa UInt
     @test String(output[1:3]) == "foo"
-    @test zlib_decompress!(decompressor, output, indata, 3) == 3
+    @test zlib_decompress!(decompressor, output, indata, UInt(3)) == 3
     @test String(output[1:3]) == "foo"
     @test GC.@preserve output indata unsafe_zlib_decompress!(
         decompressor, WriteableMemory(output), ReadableMemory(indata)
     ) == 3
     @test GC.@preserve output indata unsafe_zlib_decompress!(
-        decompressor, WriteableMemory(output), ReadableMemory(indata), 3
+        decompressor, WriteableMemory(output), ReadableMemory(indata), UInt(3)
     ) == 3
 
     # The same payload with CINFO=0 declares a valid 256-byte window.
@@ -27,13 +29,18 @@ zlib_test_data = [
     small_window[1:2] = UInt8[0x08, 0x1d]
     @test zlib_decompress!(decompressor, output, small_window) == 3
     @test String(output[1:3]) == "foo"
-    @test zlib_decompress!(decompressor, output, small_window, 3) == 3
+    @test zlib_decompress!(decompressor, output, small_window, UInt(3)) == 3
 
-    @test zlib_decompress!(decompressor, output, indata, 2) == LibDeflateErrors.deflate_insufficient_space
-    @test zlib_decompress!(decompressor, output, indata, 4) == LibDeflateErrors.deflate_output_too_short
+    @test zlib_decompress!(decompressor, output, indata, UInt(2)) ==
+        LibDeflateErrors.deflate_insufficient_space
+    @test zlib_decompress!(decompressor, output, indata, UInt(4)) ==
+        LibDeflateErrors.deflate_output_too_short
+    @test_throws MethodError zlib_decompress!(decompressor, output, indata, 3)
 
-    @test zlib_decompress!(decompressor, output[1:2], indata, 3) == LibDeflateErrors.deflate_insufficient_space
-    @test zlib_decompress!(decompressor, output[1:2], indata) == LibDeflateErrors.deflate_insufficient_space
+    @test zlib_decompress!(decompressor, output[1:2], indata, UInt(3)) ==
+        LibDeflateErrors.deflate_insufficient_space
+    @test zlib_decompress!(decompressor, output[1:2], indata) ==
+        LibDeflateErrors.deflate_insufficient_space
 
     cp = copy(indata)
 
@@ -51,11 +58,11 @@ zlib_test_data = [
     @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_header_check
 
     cp[2] = 0x01
-    @test zlib_decompress!(decompressor, output, cp, 3) == 3
+    @test zlib_decompress!(decompressor, output, cp, UInt(3)) == 3
     cp[2] = 0xda
-    @test zlib_decompress!(decompressor, output, cp, 3) == 3
+    @test zlib_decompress!(decompressor, output, cp, UInt(3)) == 3
     cp[2] = 0x9c
-    @test zlib_decompress!(decompressor, output, cp, 3) == 3
+    @test zlib_decompress!(decompressor, output, cp, UInt(3)) == 3
 
     cp[end] = 0x46
     @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_adler32
@@ -63,7 +70,7 @@ zlib_test_data = [
     trailing_payload = vcat(indata[1:(end - 4)], 0xaa, 0xbb, indata[(end - 3):end])
     @test zlib_decompress!(decompressor, output, trailing_payload) ==
         LibDeflateErrors.deflate_bad_payload
-    @test zlib_decompress!(decompressor, output, trailing_payload, 3) ==
+    @test zlib_decompress!(decompressor, output, trailing_payload, UInt(3)) ==
         LibDeflateErrors.deflate_bad_payload
 end
 
@@ -71,21 +78,29 @@ end
     output = zeros(UInt8, 128)
     compressor = Compressor()
 
-    bound = zlib_compress_bound(compressor, sizeof("foo"))
-    @test bound == deflate_compress_bound(compressor, sizeof("foo")) + 6
-    @test zlib_compress!(compressor, zeros(UInt8, bound), "foo") isa Int
+    bound = zlib_compress_bound(compressor, UInt(sizeof("foo")))
+    @test bound == deflate_compress_bound(compressor, UInt(sizeof("foo"))) + UInt(6)
+    @test bound isa UInt
+    @test zlib_compress!(compressor, zeros(UInt8, bound), "foo") isa UInt
     @test zlib_compress!(compressor, output, "foo") == length(first(zlib_test_data))
     @test output[1:length(first(zlib_test_data))] == first(zlib_test_data)
 
     @test zlib_compress!(compressor, zeros(Float64, 4), "foo") == length(first(zlib_test_data))
-    @test zlib_compress!(compressor, zeros(Int8, 0), "foo") == LibDeflateErrors.zlib_insufficient_space
-    @test zlib_compress!(compressor, zeros(Float64, 1), "foo") == LibDeflateErrors.deflate_insufficient_space
+    @test zlib_compress!(compressor, zeros(Int8, 0), "foo") ==
+        LibDeflateErrors.zlib_insufficient_space
+    @test zlib_compress!(compressor, zeros(Float64, 1), "foo") ==
+        LibDeflateErrors.deflate_insufficient_space
 
     input = CustomReadable(Vector{UInt8}("custom bound input"))
-    bound = zlib_compress_bound(compressor, sizeof(input.data))
-    @test zlib_compress!(compressor, zeros(UInt8, bound), input) isa Int
+    bound = zlib_compress_bound(compressor, UInt(sizeof(input.data)))
+    @test zlib_compress!(compressor, zeros(UInt8, bound), input) isa UInt
 
-    for (compresslevel, header) in [(1, 0x0178), (4, 0x9c78), (LibDeflate.DEFAULT_COMPRESSION_LEVEL, 0x5e78), (12, 0xda78)]
+    for (compresslevel, header) in [
+            (UInt8(1), 0x0178),
+            (UInt8(4), 0x9c78),
+            (LibDeflate.DEFAULT_COMPRESSION_LEVEL, 0x5e78),
+            (UInt8(12), 0xda78),
+        ]
         compressor = Compressor(compresslevel)
         @test zlib_compress!(compressor, output, "foo") > 6
         @test UInt16(output[1]) | (UInt16(output[2]) << 8) == header
@@ -109,7 +124,12 @@ end
             compressor, CustomWriteable(compressed), CustomReadable(v)
         )
         @test n_compressed_bytes > 6
-        @test zlib_decompress!(decompressor, decompressed, compressed[1:n_compressed_bytes], sizeof(input)) isa Int
+        @test zlib_decompress!(
+            decompressor,
+            decompressed,
+            compressed[1:n_compressed_bytes],
+            UInt(sizeof(input)),
+        ) isa UInt
         @test transcode(ZlibDecompressor, compressed[1:n_compressed_bytes]) == v
 
         # Can decompress zlib
