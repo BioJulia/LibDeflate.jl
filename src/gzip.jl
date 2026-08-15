@@ -79,13 +79,19 @@ function parse_extra_field(
 end
 
 """
-    is_valid_extra_data(ptr::Ptr, remaining_bytes::UInt16)::Bool
+    unsafe_is_valid_extra_data(data::ReadableMemory)::Bool
 
-Check if the chunk of bytes pointed to by `ptr` and `remaining_bytes`
-onward represent valid gzip metadata for the "extra" field.
+Check whether `data` represents valid gzip metadata for the "extra" field.
+Gzip extra data cannot exceed `typemax(UInt16)` bytes.
+
+The memory referenced by `data` must remain valid for the duration of the call.
+
+See also: [`is_valid_extra_data`](@ref)
 """
-function is_valid_extra_data(ptr::Ptr, remaining_bytes::Integer)::Bool
-    rem_bytes = UInt16(remaining_bytes)
+function unsafe_is_valid_extra_data(data::ReadableMemory)::Bool
+    sizeof(data) > typemax(UInt16) && return false
+    ptr = Ptr{UInt8}(pointer(data))
+    rem_bytes = sizeof(data) % UInt16
     while !iszero(rem_bytes)
         # First four bytes: S1, S2, field_len
         rem_bytes < 4 && return false
@@ -97,6 +103,18 @@ function is_valid_extra_data(ptr::Ptr, remaining_bytes::Integer)::Bool
         ptr += 4 + field_len
     end
     return true
+end
+
+"""
+    is_valid_extra_data(data)::Bool
+
+Check whether `data` represents valid gzip metadata for the "extra" field.
+Custom input types can opt in by implementing `ReadableMemory(data)`.
+
+See also: [`unsafe_is_valid_extra_data`](@ref)
+"""
+function is_valid_extra_data(data)::Bool
+    return GC.@preserve data unsafe_is_valid_extra_data(ReadableMemory(data))
 end
 
 """
@@ -118,46 +136,42 @@ end
 """
     parse_gzip_header(
         input, extra_data::Union{Vector{GzipExtraField}, Nothing}
-    )::Union{LibDeflateError, Tuple{UInt32, GzipHeader}}
+    )::Union{LibDeflateError, @NamedTuple{read::UInt32, header::GzipHeader}}
 
-Parse the input data, returning a `GzipHeader` object, or a `LibDeflateError`.
-The parser will not read more than `max_len` bytes.
-If a vector of gzip
-extra data is passed, it will not allocate a new vector, but overwrite the given one.
+Parse the input data, returning the number of bytes read and a `GzipHeader`, or a
+`LibDeflateError`.
+If a vector of gzip extra data is passed, the parser will reuse and overwrite it.
 """
 function parse_gzip_header(
         in; extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing
-    )::Union{LibDeflateError, Tuple{UInt32, GzipHeader}}
-    GC.@preserve in begin
-        read = ReadableMemory(in)
-        return unsafe_parse_gzip_header(pointer(read), sizeof(read), extra_data)
-    end
+    )::Union{LibDeflateError, @NamedTuple{read::UInt32, header::GzipHeader}}
+    return GC.@preserve in unsafe_parse_gzip_header(ReadableMemory(in), extra_data)
 end
 
 """
     unsafe_parse_gzip_header(
-        in_ptr::Ptr, max_len::Integer,
+        input::ReadableMemory,
         extra_data::Union{Vector{GzipExtraField}, Nothing}=nothing
     )
 
-Parse the input data, returning a `GzipHeader` object, or a `LibDeflateError`.
-The parser will not read more than `max_len` bytes. If a vector of gzip
-extra data is passed, it will not allocate a new vector, but overwrite the given one.
+Parse the input data, returning the number of bytes read and a `GzipHeader`, or a
+`LibDeflateError`.
+The parser will not read more than `sizeof(input)` bytes. If a vector of gzip extra
+data is passed, it will not allocate a new vector, but overwrite the given one.
 """
 function unsafe_parse_gzip_header(
-        in_ptr::Ptr,
-        max_len::Integer, # maximum length of header
+        input::ReadableMemory,
         extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
-    )::Union{LibDeflateError, Tuple{UInt32, GzipHeader}}
+    )::Union{LibDeflateError, @NamedTuple{read::UInt32, header::GzipHeader}}
 
     # header is at least 10 bytes
-    max_len = UInt(max_len)
+    max_len = sizeof(input) % UInt
     max_len > 9 || return LibDeflateErrors.gzip_header_too_short
     # Bytes 1 - 10. Check first four bytes, skip rest
     # +---+---+---+---+---+---+---+---+---+---+
     # |ID1|ID2|CM |FLG|     MTIME     |XFL|OS | (more-->)
     # +---+---+---+---+---+---+---+---+---+---+
-    ptr = Ptr{UInt8}(in_ptr) - UInt(1) # zero-indexed pointer
+    ptr = Ptr{UInt8}(pointer(input)) - UInt(1) # one-indexed pointer
     header = ltoh(unsafe_load(Ptr{UInt32}(ptr + 1)))
     header & 0x0000ffff == 0x00008b1f || return LibDeflateErrors.gzip_bad_magic_bytes
     header & 0x00ff0000 == 0x00080000 || return LibDeflateErrors.gzip_not_deflate
@@ -229,122 +243,153 @@ function unsafe_parse_gzip_header(
         # +---+---+
         UInt(index) + UInt(1) <= max_len ||
             return LibDeflateErrors.gzip_header_too_short
-        crc_obs_16 = unsafe_crc32(ptr + one(UInt), index - one(UInt)) % UInt16
+        crc_input = ReadableMemory(ptr + one(UInt), (index - one(UInt)) % UInt)
+        crc_obs_16 = unsafe_crc32(crc_input) % UInt16
         crc_exp_16 = ltoh(unsafe_load(Ptr{UInt16}(ptr + index)))
         crc_obs_16 == crc_exp_16 || return LibDeflateErrors.gzip_bad_header_crc16
         index += UInt32(2)
     end
 
-    return (index - UInt32(1), GzipHeader(mtime, filename, comment, extra))
+    return (; read = index - UInt32(1), header = GzipHeader(mtime, filename, comment, extra))
 end
 
 """
     GzipDecompressResult
 
-Result of `LibDeflate`'s gzip decompression on byte vector.
+Result of `LibDeflate`'s gzip decompression.
 
 It has the following fields:
 * `len::UInt32` length of decompressed data
+* `read::UInt32` number of bytes read from input
 * `header::GzipHeader` metadata
 """
 struct GzipDecompressResult
     len::UInt32 # length of decompressed data
+    read::UInt32 # number of bytes read of the stream
     header::GzipHeader
 end
 
 """
     gzip_decompress!(
-        ::Decompressor, out::Vector{UInt8}, in_data, max_len=typemax(Int)
+        ::Decompressor, output, input, [n_out::Integer]; extra_data=nothing
     )::Union{GzipDecompressResult, LibDeflateError}
 
-Gzip decompress the input data into `out`, and resize `out` to fit.
-Only the first gzip member is decompressed; any following members or trailing
-data are left unread.
+Decompress the first gzip member in `input` into the fixed-size buffer `output`.
+Return `LibDeflate.deflate_insufficient_space` if the decompressed data does not fit.
 
-See also: [`unsafe_gzip_decompress!`](@ref)
+If the exact decompressed size is known, pass it as `n_out` to use the faster
+known-size decompression path. An incorrect size returns
+`LibDeflate.deflate_output_too_short` or `LibDeflate.deflate_insufficient_space`.
+
+On success, the returned result reports both the decompressed length and the total
+number of input bytes consumed by that member. Following gzip members or trailing data
+are left unread. Custom input and output types can opt in by implementing
+`ReadableMemory(input)` and `WriteableMemory(output)`, respectively.
 """
 function gzip_decompress!(
         decompressor::Decompressor,
-        out_data::Vector{UInt8},
-        in_data;
+        output,
+        input;
         extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
-        max_len::Integer = typemax(Int),
     )::Union{LibDeflateError, GzipDecompressResult}
-    GC.@preserve in_data out_data begin
-        read = ReadableMemory(in_data)
-        result = unsafe_gzip_decompress!(
+    return GC.@preserve input output begin
+        unsafe_gzip_decompress!(
             decompressor,
-            out_data,
-            UInt(max_len),
-            Ptr{UInt8}(pointer(read)),
-            sizeof(read) % UInt,
+            WriteableMemory(output),
+            ReadableMemory(input);
             extra_data,
         )
     end
-    result isa LibDeflateError && return result
-    length(out_data) == result.len || resize!(out_data, result.len)
-    return result
+end
+
+function gzip_decompress!(
+        decompressor::Decompressor,
+        output,
+        input,
+        n_out::Integer;
+        extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
+    )::Union{LibDeflateError, GzipDecompressResult}
+    return GC.@preserve input output begin
+        unsafe_gzip_decompress!(
+            decompressor,
+            WriteableMemory(output),
+            ReadableMemory(input),
+            n_out;
+            extra_data,
+        )
+    end
 end
 
 """
     unsafe_gzip_decompress!(
-        ::Decompressor, out_data::Vector{UInt8},
-        max_outlen::Integer, in_ptr::Ptr, len::Integer,
-        extra_data::Union{Vector{GzipExtraField}, Nothing}
+        ::Decompressor, output::WriteableMemory, input::ReadableMemory,
+        [n_out::Integer]; extra_data=nothing
     )::Union{LibDeflateError, GzipDecompressResult}
 
-Use the `Decompressor` to decompress gzip data at `in_ptr` and `len` bytes forward
-into `out_data`. If there is not enough room at `out_data`, resize `out_data`, except
-if it would be bigger than `max_outlen`, in that case return an error.
+Use the `Decompressor` to decompress the first gzip member in `input` into `output`.
+Without `n_out`, `sizeof(output)` is the available capacity. If the exact decompressed
+size is known, pass it as `n_out` to use the faster known-size path. Return an error if
+the output size is insufficient or incorrect.
+
 If `extra_data` is not `nothing`, reuse the vector by overwriting.
 Only the first gzip member is decompressed; any following members or trailing
 data are left unread.
 
-Return a `GzipDecompressResult`
+Return a `GzipDecompressResult` on success.
 
 See also: [`gzip_decompress!`](@ref)
 """
 function unsafe_gzip_decompress!(
         decompressor::Decompressor,
-        out_data::Vector{UInt8},
-        max_outlen::Integer,
-        in_ptr::Ptr,
-        len::Integer,
+        output::WriteableMemory,
+        input::ReadableMemory;
         extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
+    )::Union{LibDeflateError, GzipDecompressResult}
+    return _unsafe_gzip_decompress!(
+        Base.SizeUnknown(), decompressor, output, input, extra_data
+    )
+end
+
+function unsafe_gzip_decompress!(
+        decompressor::Decompressor,
+        output::WriteableMemory,
+        in::ReadableMemory,
+        n_out::Integer;
+        extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
+    )::Union{LibDeflateError, GzipDecompressResult}
+    sizeof(output) < n_out && return LibDeflateErrors.deflate_insufficient_space
+    exact_output = WriteableMemory(pointer(output), n_out % UInt)
+    return _unsafe_gzip_decompress!(
+        Base.HasLength(), decompressor, exact_output, in, extra_data
+    )
+end
+
+function _unsafe_gzip_decompress!(
+        size::Union{Base.SizeUnknown, Base.HasLength},
+        decompressor::Decompressor,
+        output::WriteableMemory,
+        in::ReadableMemory,
+        extra_data::Union{Vector{GzipExtraField}, Nothing},
     )::Union{LibDeflateError, GzipDecompressResult}
     # We need to have at least 2 + 4 + 4 bytes left after header
     nonheader_min_len = 2 + 4 + 4
-    len < nonheader_min_len && return LibDeflateErrors.gzip_header_too_short
-    len = UInt(len)
+    len = sizeof(in) % UInt
+    sizeof(in) < nonheader_min_len && return LibDeflateErrors.gzip_header_too_short
 
     # First decompress header
-    hdr_result = unsafe_parse_gzip_header(in_ptr, UInt(len - nonheader_min_len), extra_data)
+    header_input = ReadableMemory(pointer(in), len - UInt(nonheader_min_len))
+    hdr_result = unsafe_parse_gzip_header(header_input, extra_data)
     hdr_result isa LibDeflateError && return hdr_result
-    header_len, header = hdr_result
+    header_len = hdr_result.read
+    header = hdr_result.header
 
-    # Decompress the first DEFLATE stream.  Its trailer cannot be found from the
-    # end of the input, since another gzip member may follow it, so use
-    # libdeflate's consumed-input count to locate it.
-    max_capacity = min(UInt(max_outlen), UInt(typemax(UInt32)), UInt(typemax(Int)))
-    capacity = min(UInt(length(out_data)), max_capacity)
-    decomp_result = LibDeflateErrors.deflate_insufficient_space
-    while true
-        decomp_result = GC.@preserve out_data unsafe_decompress_ex!(
-            Base.SizeUnknown(),
-            decompressor,
-            pointer(out_data),
-            capacity,
-            in_ptr + header_len,
-            len - header_len,
-        )
-        decomp_result != LibDeflateErrors.deflate_insufficient_space && break
-        capacity == max_capacity && break
-
-        capacity = iszero(capacity) ? one(UInt) : min(2 * capacity, max_capacity)
-        resize!(out_data, capacity % Int)
-    end
+    # The trailer cannot be found from the end of the input, since another gzip
+    # member may follow it. Use libdeflate's consumed-input count to locate it.
+    compressed = ReadableMemory(pointer(in) + header_len, len - header_len)
+    decomp_result = _unsafe_decompress!(size, decompressor, output, compressed)
     decomp_result isa LibDeflateError && return decomp_result
-    consumed, uncompressed_size = decomp_result
+    consumed = decomp_result.read
+    uncompressed_size = decomp_result.written
 
     # Check this member's trailer rather than the last eight bytes of the input.
     # +---+---+---+---+---+---+---+---+
@@ -352,123 +397,144 @@ function unsafe_gzip_decompress!(
     # +---+---+---+---+---+---+---+---+
     trailer_offset = UInt(header_len) + UInt(consumed)
     len - trailer_offset >= UInt(8) || return LibDeflateErrors.gzip_header_too_short
-    trailer_ptr = Ptr{UInt8}(in_ptr) + trailer_offset
+    trailer_ptr = Ptr{UInt8}(pointer(in)) + trailer_offset
     size_exp = ltoh(unsafe_load(Ptr{UInt32}(trailer_ptr + 4)))
     size_exp == uncompressed_size % UInt32 ||
         return LibDeflateErrors.deflate_bad_payload
 
     # Check for CRC checksum and validate it
     crc_exp = ltoh(unsafe_load(Ptr{UInt32}(trailer_ptr)))
-    crc_obs = GC.@preserve out_data unsafe_crc32(pointer(out_data), uncompressed_size)
+    crc_input = ReadableMemory(pointer(output), uncompressed_size % UInt)
+    crc_obs = unsafe_crc32(crc_input)
     crc_exp == crc_obs || return LibDeflateErrors.gzip_bad_crc32
 
-    return GzipDecompressResult(uncompressed_size % UInt32, header)
+    total_read = trailer_offset + UInt(8)
+    return GzipDecompressResult(uncompressed_size % UInt32, total_read % UInt32, header)
 end
 
-#Computes maximal output length of a gzip compression
-function max_out_len(
-        input_len::UInt,
-        comment_len::UInt,
-        filename_len::UInt,
-        extra_len::UInt16,
+function _gzip_wrapper_size(
+        comment_len::Union{Nothing, Int},
+        filename_len::Union{Nothing, Int},
+        extra_len::Union{Nothing, Int},
         header_crc::Bool,
-    )
-    # Taken from libdeflate source code
-    # with slight modifications
-    static = 10 + 8 + 9 # header + footer + padding
+    )::Union{LibDeflateError, Int}
+    comment_len !== nothing && comment_len < 0 &&
+        throw(ArgumentError("comment_len must be nonnegative"))
+    filename_len !== nothing && filename_len < 0 &&
+        throw(ArgumentError("filename_len must be nonnegative"))
+    extra_len !== nothing && extra_len < 0 &&
+        throw(ArgumentError("extra_len must be nonnegative"))
+    extra_len !== nothing && extra_len > typemax(UInt16) &&
+        return LibDeflateErrors.gzip_extra_too_long
 
-    n_chunks = max(cld(input_len, 10000), 1)
-    len = static + input_len + 5 * n_chunks # 5 byte overhead per chunk
-    len += comment_len + !iszero(comment_len) # incl. null byte
-    len += filename_len + !iszero(filename_len) # incl. null byte
-    len += extra_len + 2 * !iszero(extra_len) # incl. 2-byte leader
-    len += 2 * header_crc
-    return len
+    size = 10 + 8
+    comment_len === nothing || (size += comment_len + 1)
+    filename_len === nothing || (size += filename_len + 1)
+    extra_len === nothing || (size += extra_len + 2)
+    size += 2 * header_crc
+    return size
+end
+
+"""
+    gzip_compress_bound(
+        compressor::Compressor, input_size::Int;
+        comment_len=nothing, filename_len=nothing, extra_len=nothing, header_crc=false
+    )::Union{LibDeflateError, Int}
+
+Return a worst-case upper bound on the number of bytes produced by
+[`gzip_compress!`](@ref) with the given input and metadata sizes. A metadata length of
+`nothing` means that the corresponding optional field will not be present, while `0`
+represents a present but empty field.
+
+The bound may overestimate the required space, but an output buffer of this size is
+guaranteed to be sufficient. Return `LibDeflate.gzip_extra_too_long` if `extra_len`
+cannot be represented in a gzip header. This calculation does not inspect any input or
+metadata and is constant-time with respect to all supplied sizes.
+"""
+function gzip_compress_bound(
+        compressor::Compressor,
+        input_size::Int;
+        comment_len::Union{Nothing, Int} = nothing,
+        filename_len::Union{Nothing, Int} = nothing,
+        extra_len::Union{Nothing, Int} = nothing,
+        header_crc::Bool = false,
+    )::Union{LibDeflateError, Int}
+    wrapper_size = _gzip_wrapper_size(comment_len, filename_len, extra_len, header_crc)
+    wrapper_size isa LibDeflateError && return wrapper_size
+    return deflate_compress_bound(compressor, input_size) + wrapper_size
 end
 
 """
     gzip_compress!(
-        compressor::Compressor,
-        output::Vector{UInt8},
-        input::ReadableMemory
-        comment=nothing,
-        filename=nothing,
-        extra=nothing,
-        header_crc::Bool=false
-    )::Union{LibDeflateError, Vector{UInt8}}
+        compressor::Compressor, output, input;
+        comment=nothing, filename=nothing, extra=nothing, header_crc=false
+    )::Union{LibDeflateError, Int}
 
-Gzip compress `input` into `output` and resizing output to fit. Returns `output`.
+Compress `input` as gzip data into the fixed-size buffer `output`, returning the
+number of bytes written or `LibDeflate.deflate_insufficient_space` if it does not fit.
+The output is never resized.
 
-Adds optional data `comment`, `filename`, `extra`. All these must be `nothing` if
-not applicable.
-* `comment` and `filename` must not include the byte `0x00`.
-* `extra` must be at most `typemax(UInt16)` bytes long.
-
-If `header_crc` is true, add the header CRC checksum.
-
-See also: [`unsafe_gzip_compress!`](@ref)
+Use [`gzip_compress_bound`](@ref) to determine an output size that is guaranteed to
+be sufficient. Custom input, output, and metadata types can opt in by implementing
+`ReadableMemory` and `WriteableMemory`.
 """
 function gzip_compress!(
         compressor::Compressor,
-        output::Vector{UInt8},
+        output,
         input;
         comment = nothing,
         filename = nothing,
         extra = nothing,
         header_crc::Bool = false,
-    )::Union{LibDeflateError, Vector{UInt8}}
-    # Resize output to maximal possible length
-    GC.@preserve input comment filename extra begin
-        read = ReadableMemory(input)
-        mem_comment = comment === nothing ? nothing : ReadableMemory(comment)
-        mem_filename = filename === nothing ? nothing : ReadableMemory(filename)
-        mem_extra = extra === nothing ? nothing : ReadableMemory(extra)
-
-        maxlen = max_out_len(
-            sizeof(read) % UInt,
-            mem_comment === nothing ? UInt(0) : sizeof(mem_comment) % UInt,
-            mem_filename === nothing ? UInt(0) : sizeof(mem_filename) % UInt,
-            mem_extra === nothing ? UInt16(0) : sizeof(mem_extra) % UInt16,
+    )::Union{LibDeflateError, Int}
+    return GC.@preserve output input comment filename extra begin
+        _gzip_compress!(
+            compressor,
+            WriteableMemory(output),
+            ReadableMemory(input),
+            comment === nothing ? nothing : ReadableMemory(comment),
+            filename === nothing ? nothing : ReadableMemory(filename),
+            extra === nothing ? nothing : ReadableMemory(extra),
             header_crc,
         )
-
-        # We add 8 extra bytes to make sure Libdeflate don't error due to off-by-one errors
-        resize!(output, maxlen + 8)
-
-        GC.@preserve output begin
-            write = WriteableMemory(output)
-            n_bytes = unsafe_gzip_compress!(
-                compressor,
-                pointer(write),
-                sizeof(write) % UInt,
-                pointer(read),
-                sizeof(read) % UInt,
-                mem_comment,
-                mem_filename,
-                mem_extra,
-                header_crc,
-            )
-        end
     end
-    n_bytes isa LibDeflateError && return n_bytes
-    resize!(output, n_bytes % UInt)
-    return output
+end
+
+function _gzip_compress!(
+        compressor::Compressor,
+        output::WriteableMemory,
+        input::ReadableMemory,
+        comment::Union{Nothing, ReadableMemory},
+        filename::Union{Nothing, ReadableMemory},
+        extra::Union{Nothing, ReadableMemory},
+        header_crc::Bool,
+    )::Union{LibDeflateError, Int}
+    return unsafe_gzip_compress!(
+        compressor,
+        output,
+        input,
+        comment,
+        filename,
+        extra,
+        header_crc,
+    )
 end
 
 """
     unsafe_gzip_compress!(
         compressor::Compressor,
-        out_ptr::Ptr, out_len::Integer,
-        in_ptr::Ptr, in_len::Integer,
+        out::WriteableMemory,
+        in::ReadableMemory,
         comment::Union{Nothing, ReadableMemory},
         filename::Union{Nothing, ReadableMemory},
         extra::Union{Nothing, ReadableMemory},
         header_crc::Bool
     )::Union{LibDeflateError, Int}
 
-Use the `Compressor` to gzip compress input at `in_ptr` and `in_len` bytes onwards
-to, `out_ptr`.
-If the resulting gzip data could be longer than `out_len`, return an error.
+Use the `Compressor` to gzip compress input at `pointer(in)` and `sizeof(in)` bytes onwards
+to, `pointer(out)`.
+If the resulting gzip data does not fit in `sizeof(out)`, return
+`LibDeflate.deflate_insufficient_space`.
 Optionally, include gzip comment, filename or extra data. All these must be `nothing` if
 not applicable.
 
@@ -476,37 +542,30 @@ Adds optional data `comment`, `filename`, `extra`.
 * `comment` and `filename` must not include the byte `0x00`.
 * `extra` must be at most `typemax(UInt16)` bytes long.
 
-Returns the number of bytes written to `out_ptr`.
+Returns the number of bytes written to `pointer(out)`.
 
 See also: [`gzip_compress!`](@ref)
 """
 function unsafe_gzip_compress!(
         compressor::Compressor,
-        out_ptr::Ptr,
-        out_len::Integer,
-        in_ptr::Ptr,
-        in_len::Integer,
+        out::WriteableMemory,
+        in::ReadableMemory,
         comment::Union{Nothing, ReadableMemory},
         filename::Union{Nothing, ReadableMemory},
         extra::Union{Nothing, ReadableMemory},
         header_crc::Bool,
     )::Union{LibDeflateError, Int}
-    # Check output len is long enough
-    max_out_len(
-        UInt(in_len),
-        comment === nothing ? UInt(0) : sizeof(comment) % UInt,
-        filename === nothing ? UInt(0) : sizeof(filename) % UInt,
-        if extra === nothing
-            UInt16(0)
-        else
-            # No more than typemax(UInt16) bytes for extra field
-            sizeof(extra) > typemax(UInt16) && return LibDeflateErrors.gzip_extra_too_long
-            sizeof(extra) % UInt16
-        end,
+    out_len = sizeof(out) % UInt
+    wrapper_size = _gzip_wrapper_size(
+        comment === nothing ? nothing : sizeof(comment),
+        filename === nothing ? nothing : sizeof(filename),
+        extra === nothing ? nothing : sizeof(extra),
         header_crc,
-    ) > out_len && return LibDeflateErrors.deflate_insufficient_space
+    )
+    wrapper_size isa LibDeflateError && return wrapper_size
+    sizeof(out) < wrapper_size && return LibDeflateErrors.deflate_insufficient_space
 
-    # Write first four bytes - magix number, compression type, flags
+    # Validate metadata before modifying the output.
     header = 0x00088b1f
     if comment !== nothing
         # Check for absence of zero byte
@@ -520,12 +579,14 @@ function unsafe_gzip_compress!(
     end
     if extra !== nothing
         # Validate extra data
-        is_valid_extra_data(pointer(extra), sizeof(extra) % UInt16) ||
+        unsafe_is_valid_extra_data(extra) ||
             return LibDeflateErrors.gzip_bad_extra
         header |= 0x04000000
     end
     header = ifelse(header_crc, header | 0x02000000, header)
-    ptr = Ptr{UInt8}(out_ptr) - 1
+
+    # Write first four bytes - magic number, compression type, flags
+    ptr = Ptr{UInt8}(pointer(out)) - 1
     unsafe_store!(Ptr{UInt32}(ptr + 1), htol(header))
 
     # Add system time (take lower 32 bits if it overflows)
@@ -559,25 +620,25 @@ function unsafe_gzip_compress!(
 
     # Add in CRC16
     if header_crc
-        header_crc = unsafe_crc32(ptr + one(UInt), index - one(UInt)) % UInt16
+        crc_input = ReadableMemory(ptr + one(UInt), index - one(UInt))
+        header_crc = unsafe_crc32(crc_input) % UInt16
         unsafe_store!(Ptr{UInt16}(ptr + index), htol(header_crc))
         index += UInt(2)
     end
 
     # Add in compressed data
     remaining_out_data = out_len - index + 1 - 8 # tail
-    n_compressed = unsafe_compress!(
-        compressor, ptr + index, remaining_out_data, in_ptr, in_len
-    )
+    compress_to = WriteableMemory(ptr + index, remaining_out_data % UInt)
+    n_compressed = unsafe_compress!(compressor, compress_to, in)
     n_compressed isa LibDeflateError && return n_compressed
     index += n_compressed
 
     # Add in crc32 of uncompressed data
-    crc = unsafe_crc32(in_ptr, in_len)
+    crc = unsafe_crc32(in)
     unsafe_store!(Ptr{UInt32}(ptr + index), htol(crc))
     index += 4
 
     # Add in isize (uncompressed size)
-    unsafe_store!(Ptr{UInt32}(ptr + index), htol(in_len % UInt32))
+    unsafe_store!(Ptr{UInt32}(ptr + index), htol(sizeof(in) % UInt32))
     return (index + 3) % Int # 4 bytes isize - off-by-one
 end

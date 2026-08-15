@@ -15,6 +15,12 @@ zlib_test_data = [
     @test String(output[1:3]) == "foo"
     @test zlib_decompress!(decompressor, output, indata, 3) == 3
     @test String(output[1:3]) == "foo"
+    @test GC.@preserve output indata unsafe_zlib_decompress!(
+        decompressor, WriteableMemory(output), ReadableMemory(indata)
+    ) == 3
+    @test GC.@preserve output indata unsafe_zlib_decompress!(
+        decompressor, WriteableMemory(output), ReadableMemory(indata), 3
+    ) == 3
 
     # The same payload with CINFO=0 declares a valid 256-byte window.
     small_window = copy(indata)
@@ -65,12 +71,19 @@ end
     output = zeros(UInt8, 128)
     compressor = Compressor()
 
+    bound = zlib_compress_bound(compressor, sizeof("foo"))
+    @test bound == deflate_compress_bound(compressor, sizeof("foo")) + 6
+    @test zlib_compress!(compressor, zeros(UInt8, bound), "foo") isa Int
     @test zlib_compress!(compressor, output, "foo") == length(first(zlib_test_data))
     @test output[1:length(first(zlib_test_data))] == first(zlib_test_data)
 
     @test zlib_compress!(compressor, zeros(Float64, 4), "foo") == length(first(zlib_test_data))
     @test zlib_compress!(compressor, zeros(Int8, 0), "foo") == LibDeflateErrors.zlib_insufficient_space
     @test zlib_compress!(compressor, zeros(Float64, 1), "foo") == LibDeflateErrors.deflate_insufficient_space
+
+    input = CustomReadable(Vector{UInt8}("custom bound input"))
+    bound = zlib_compress_bound(compressor, sizeof(input.data))
+    @test zlib_compress!(compressor, zeros(UInt8, bound), input) isa Int
 
     for (compresslevel, header) in [(1, 0x0178), (4, 0x9c78), (LibDeflate.DEFAULT_COMPRESSION_LEVEL, 0x5e78), (12, 0xda78)]
         compressor = Compressor(compresslevel)
@@ -92,14 +105,18 @@ end
     decompressor = Decompressor()
     for input in ("Abracadabra", "", collect(codeunits("Power overwhelming")))
         v = Vector{UInt8}(input)
-        n_compressed_bytes = zlib_compress!(compressor, compressed, input)
+        n_compressed_bytes = zlib_compress!(
+            compressor, CustomWriteable(compressed), CustomReadable(v)
+        )
         @test n_compressed_bytes > 6
         @test zlib_decompress!(decompressor, decompressed, compressed[1:n_compressed_bytes], sizeof(input)) isa Int
         @test transcode(ZlibDecompressor, compressed[1:n_compressed_bytes]) == v
 
         # Can decompress zlib
         zlib_compressed = transcode(ZlibCompressor, v)
-        @test zlib_decompress!(decompressor, decompressed, zlib_compressed) == sizeof(input)
+        @test zlib_decompress!(
+            decompressor, CustomWriteable(decompressed), CustomReadable(zlib_compressed)
+        ) == sizeof(input)
         @test decompressed[1:sizeof(input)] == v
     end
 end

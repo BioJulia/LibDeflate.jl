@@ -8,11 +8,14 @@ data_test_cases = [
 ]
 
 @testset "Is valid data" begin
-    test_valid(v) = is_valid_extra_data(pointer(v), UInt16(length(v)))
+    test_valid(v) = is_valid_extra_data(v)
+    test_unsafe_valid(v) = GC.@preserve v unsafe_is_valid_extra_data(ReadableMemory(v))
     for data in data_test_cases
         @test test_valid(data)
+        @test test_unsafe_valid(data)
         data[2] = 0x00
         @test !test_valid(data)
+        @test !test_unsafe_valid(data)
         data[2] = 0xff
         push!(data, 0x00)
         @test !test_valid(data)
@@ -21,6 +24,8 @@ data_test_cases = [
         data = empty!(copy(data))
         @test test_valid(data)
     end
+    @test is_valid_extra_data(CustomReadable(first(data_test_cases)))
+    @test !is_valid_extra_data(zeros(UInt8, Int(typemax(UInt16)) + 1))
 end
 
 @testset "Parse fields" begin
@@ -71,39 +76,48 @@ function test_header_example(data::Vector{UInt8}, header::LibDeflate.GzipHeader)
 end
 
 @testset "Parse header" begin
-    header = GC.@preserve header_data unsafe_parse_gzip_header(pointer(header_data), UInt(51))[2]
+    result = GC.@preserve header_data unsafe_parse_gzip_header(ReadableMemory(header_data))
+    @test result.read == length(header_data)
+    header = result.header
     test_header_example(header_data, header)
 
-    header = parse_gzip_header(header_data)[2]
+    result = parse_gzip_header(header_data)
+    @test result.read == length(header_data)
+    header = result.header
     test_header_example(header_data, header)
 
-    header = GC.@preserve header_data unsafe_parse_gzip_header(pointer(header_data), UInt(51), LibDeflate.GzipExtraField[])[2]
+    result = GC.@preserve header_data unsafe_parse_gzip_header(
+        ReadableMemory(header_data), LibDeflate.GzipExtraField[]
+    )
+    header = result.header
     test_header_example(header_data, header)
 
     header_data[end - 2] = 0x01
-    @test GC.@preserve header_data unsafe_parse_gzip_header(pointer(header_data), UInt(51)) == LibDeflateErrors.gzip_string_not_null_terminated
+    @test GC.@preserve header_data unsafe_parse_gzip_header(ReadableMemory(header_data)) ==
+        LibDeflateErrors.gzip_string_not_null_terminated
     header_data[end - 2] = 0x00
 
     minimal_data = UInt8[
         0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
         0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x10, 0x20,
     ]
-    (header_len, header) = parse_gzip_header(minimal_data)
-    @test header_len == 18
+    result = parse_gzip_header(minimal_data)
+    @test result.read == 18
+    header = result.header
     ex = only(header.extra)
     @test ex.tag == (0x42, 0x43)
     @test ex.data == 17:18
 
     # Reusing extra-field storage must not retain fields from a previous header.
     extra_data = LibDeflate.GzipExtraField[]
-    (_, header) = parse_gzip_header(header_data; extra_data)
+    header = parse_gzip_header(header_data; extra_data).header
     @test header.extra === extra_data
     @test !isempty(extra_data)
 
     header_without_extra = UInt8[
         0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
     ]
-    (_, header) = parse_gzip_header(header_without_extra; extra_data)
+    header = parse_gzip_header(header_without_extra; extra_data).header
     @test header.extra === nothing
     @test isempty(extra_data)
 end
@@ -137,8 +151,9 @@ end
 
     # XLEN may be zero, including when it ends exactly at the input boundary.
     empty_extra = vcat(extra_header, 0x00, 0x00)
-    header_len, header = parse_gzip_header(empty_extra)
-    @test header_len == 12
+    result = parse_gzip_header(empty_extra)
+    @test result.read == 12
+    header = result.header
     @test isempty(header.extra)
 
     truncated_extra = vcat(extra_header, 0x04, 0x00, 0x42, 0x43, 0x00)
@@ -178,43 +193,82 @@ test_data = [
 test_comment = "This is a comment"
 test_filename = "testfile.foo"
 
-struct CustomReadable
-    data::Vector{UInt8}
-end
-
-LibDeflate.ReadableMemory(input::CustomReadable) = ReadableMemory(input.data)
-
 @testset "Compression" begin
-    outdata = zeros(UInt8, 1250)
     compressor = Compressor()
     for data in test_data
-        n_bytes = GC.@preserve data outdata unsafe_gzip_compress!(
-            compressor, pointer(outdata), UInt32(length(outdata)),
-            pointer(data), UInt32(sizeof(data)),
-            LibDeflate.ReadableMemory(test_comment), LibDeflate.ReadableMemory(test_filename),
-            nothing, true
+        bound = gzip_compress_bound(
+            compressor,
+            sizeof(data);
+            comment_len = sizeof(test_comment),
+            filename_len = sizeof(test_filename),
+            extra_len = sizeof(data_test_cases[1]),
+            header_crc = true,
         )
+        outdata = zeros(UInt8, bound)
+        n_bytes = GC.@preserve data outdata unsafe_gzip_compress!(
+            compressor, WriteableMemory(outdata), ReadableMemory(data),
+            LibDeflate.ReadableMemory(test_comment), LibDeflate.ReadableMemory(test_filename),
+            LibDeflate.ReadableMemory(data_test_cases[1]), true
+        )
+        @test n_bytes <= bound
+        @test length(outdata) == bound
         decompressed = transcode(GzipDecompressor, outdata[1:n_bytes])
         @test decompressed == Vector{UInt8}(data)
 
-        gzip_compress!(
+        fill!(outdata, 0x00)
+        n_bytes = gzip_compress!(
             compressor, outdata, data;
-            comment = test_comment, filename = test_filename, extra = data_test_cases[1], header_crc = false
+            comment = test_comment,
+            filename = test_filename,
+            extra = data_test_cases[1],
+            header_crc = true,
         )
-        decompressed = transcode(GzipDecompressor, outdata)
+        @test n_bytes <= bound
+        @test length(outdata) == bound
+        decompressed = transcode(GzipDecompressor, outdata[1:n_bytes])
         @test decompressed == Vector{UInt8}(data)
-
-        # Resize for next iteration
-        resize!(outdata, 1250)
     end
 
     data = UInt8.(0:99)
     input = CustomReadable(data)
     @test sizeof(input) < sizeof(ReadableMemory(input))
 
-    output = UInt8[]
-    @test gzip_compress!(compressor, output, input) === output
-    @test transcode(GzipDecompressor, output) == data
+    bound = gzip_compress_bound(compressor, sizeof(input.data))
+    output = CustomWriteable(zeros(UInt8, bound))
+    n_bytes = gzip_compress!(compressor, output, input)
+    @test n_bytes isa Int
+    @test transcode(GzipDecompressor, output.data[1:n_bytes]) == data
+
+    base_bound = gzip_compress_bound(compressor, 0)
+    @test gzip_compress_bound(compressor, 0; comment_len = 0) == base_bound + 1
+    @test gzip_compress_bound(compressor, 0; filename_len = 0) == base_bound + 1
+    @test gzip_compress_bound(compressor, 0; extra_len = 0) == base_bound + 2
+    @test gzip_compress_bound(compressor, 0; header_crc = true) == base_bound + 2
+    for (bound_options, compress_options) in (
+            ((; comment_len = 0), (; comment = "")),
+            ((; filename_len = 0), (; filename = "")),
+            ((; extra_len = 0), (; extra = UInt8[])),
+        )
+        bound = gzip_compress_bound(compressor, 0; bound_options...)
+        output = zeros(UInt8, bound)
+        n_bytes = gzip_compress!(compressor, output, ""; compress_options...)
+        @test transcode(GzipDecompressor, output[1:n_bytes]) == UInt8[]
+    end
+
+    @test gzip_compress!(compressor, zeros(UInt8, 17), "") ==
+        LibDeflateErrors.deflate_insufficient_space
+    fixed_output = zeros(UInt8, 18)
+    @test gzip_compress!(compressor, fixed_output, "") ==
+        LibDeflateErrors.deflate_insufficient_space
+    @test length(fixed_output) == 18
+    oversized_extra_len = Int(typemax(UInt16)) + 1
+    @test gzip_compress_bound(compressor, 0; extra_len = oversized_extra_len) ==
+        LibDeflateErrors.gzip_extra_too_long
+    oversized_extra = zeros(UInt8, oversized_extra_len)
+    @test gzip_compress!(compressor, UInt8[], ""; extra = oversized_extra) ==
+        LibDeflateErrors.gzip_extra_too_long
+    @test_throws ArgumentError gzip_compress_bound(compressor, -1)
+    @test_throws ArgumentError gzip_compress_bound(compressor, 0; comment_len = -1)
 end
 
 
@@ -233,7 +287,7 @@ complex_test_case = vcat(
 
 @testset "Decompression" begin
     decompressor = Decompressor()
-    outdata = zeros(UInt8, 5) # begin with small buffer, let it resize
+    outdata = zeros(UInt8, 1001)
 
     for len in 0:19
         @test gzip_decompress!(decompressor, outdata, zeros(UInt8, len)) ==
@@ -242,19 +296,73 @@ complex_test_case = vcat(
 
     for data in test_data
         compressed = transcode(GzipCompressor, data)
+        expected = Vector{UInt8}(data)
 
         result = GC.@preserve compressed unsafe_gzip_decompress!(
-            decompressor, outdata, UInt(1001),
-            pointer(compressed), UInt(length(compressed)),
+            decompressor, WriteableMemory(outdata), ReadableMemory(compressed)
         )
-        @test outdata[1:result.len] == Vector{UInt8}(data)
+        @test outdata[1:result.len] == expected
+        @test result.read == length(compressed)
 
-        empty!(outdata)
+        result = GC.@preserve compressed unsafe_gzip_decompress!(
+            decompressor,
+            WriteableMemory(outdata),
+            ReadableMemory(compressed),
+            length(expected),
+        )
+        @test outdata[1:result.len] == expected
+        @test result.read == length(compressed)
+
+        fill!(outdata, 0x00)
         result = gzip_decompress!(decompressor, outdata, compressed)
-        @test outdata[1:result.len] == Vector{UInt8}(data)
+        @test outdata[1:result.len] == expected
+        @test result.read == length(compressed)
+        @test length(outdata) == 1001
 
-        resize!(outdata, 5)
+        fill!(outdata, 0x00)
+        result = gzip_decompress!(decompressor, outdata, compressed, length(expected))
+        @test outdata[1:result.len] == expected
+        @test result.len == length(expected)
+        @test result.read == length(compressed)
+
+        @test gzip_decompress!(
+            decompressor, outdata, compressed, length(expected) + 1
+        ) == LibDeflateErrors.deflate_output_too_short
+        if !isempty(expected)
+            @test gzip_decompress!(
+                decompressor, outdata, compressed, length(expected) - 1
+            ) == LibDeflateErrors.deflate_insufficient_space
+            @test gzip_decompress!(
+                decompressor,
+                view(outdata, 1:(length(expected) - 1)),
+                compressed,
+                length(expected),
+            ) == LibDeflateErrors.deflate_insufficient_space
+        end
+
+        if !isempty(expected)
+            small_output = zeros(UInt8, length(expected) - 1)
+            @test gzip_decompress!(decompressor, small_output, compressed) ==
+                LibDeflateErrors.deflate_insufficient_space
+        end
     end
+
+    custom_output = CustomWriteable(zeros(UInt8, 32))
+    compressed = transcode(GzipCompressor, "custom output")
+    result = gzip_decompress!(
+        decompressor,
+        custom_output,
+        CustomReadable(compressed),
+        sizeof("custom output"),
+    )
+    @test String(custom_output.data[1:result.len]) == "custom output"
+
+    compressed = transcode(GzipCompressor, "five bytes")
+    small_output = zeros(UInt8, 5)
+    original_length = length(small_output)
+    @test gzip_decompress!(decompressor, small_output, compressed) ==
+        LibDeflateErrors.deflate_insufficient_space
+    @test length(small_output) == original_length
 
     # RFC 1952 permits concatenated members.  This API deliberately returns
     # only the first member, leaving the remainder unread.
@@ -263,12 +371,14 @@ complex_test_case = vcat(
     concatenated = vcat(first_member, second_member)
     result = gzip_decompress!(decompressor, outdata, concatenated)
     @test result.len == sizeof("first member")
-    @test outdata == Vector{UInt8}(codeunits("first member"))
+    @test result.read == length(first_member)
+    @test outdata[1:result.len] == Vector{UInt8}(codeunits("first member"))
 
     # Hard test case
     res = gzip_decompress!(decompressor, outdata, complex_test_case)
     test_header_example(complex_test_case, res.header)
     @test res.len == 11
+    @test res.read == length(complex_test_case)
 
     compressed = transcode(GzipCompressor, "trailing payload")
     trailing_payload = vcat(

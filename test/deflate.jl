@@ -53,9 +53,19 @@ end
     outbuffer = zeros(UInt8, 512)
     for i in COMPRESSIBLE
         GC.@preserve i v = unsafe_wrap(Array, Ptr{UInt8}(pointer(i)), sizeof(i))
-        bytes = compress!(Compressor(), outbuffer, v)
+        compressor = Compressor()
+        bound = deflate_compress_bound(compressor, sizeof(v))
+        @test bound >= sizeof(v)
+        @test compress!(compressor, zeros(UInt8, bound), v) isa Int
+        bytes = compress!(compressor, outbuffer, v)
         @test bytes < length(v)
     end
+
+    input = CustomReadable(Vector{UInt8}("custom bound input"))
+    compressor = Compressor()
+    bound = deflate_compress_bound(compressor, sizeof(input.data))
+    @test compress!(compressor, zeros(UInt8, bound), input) isa Int
+    @test_throws ArgumentError deflate_compress_bound(compressor, -1)
 end
 
 @testset "Memory" begin
@@ -67,6 +77,9 @@ end
     mem = ReadableMemory(SubString("foo", 1:2))
     mem = ReadableMemory(write_mem)
     @test_throws MethodError WriteableMemory(mem)
+    @test pointer(mem) isa Ptr{Nothing}
+    @test sizeof(mem) isa Int
+    @test sizeof(mem) >= 0
 
     # A rectangular view that does not span every row has gaps between columns,
     # so its logical elements are not contiguous in memory.
@@ -74,10 +87,29 @@ end
     @test_throws MethodError ReadableMemory(noncontiguous)
     @test_throws MethodError WriteableMemory(noncontiguous)
 
+    padded = [PaddedBits(0x01, 0x02)]
+    @test isbitstype(PaddedBits)
+    @test_throws MethodError ReadableMemory(padded)
+    @test_throws MethodError WriteableMemory(padded)
+
     @test_throws MethodError compress!(
         compressor, "xxxxxxxxxxxxxxxxxxxxxxxxxx", UInt8[0x01, 0x02]
     )
     @test_throws MethodError compress!(compressor, v1, view(v1, 5:-1:1))
+
+    input = CustomReadable(Vector{UInt8}("custom memory"))
+    compressed = CustomWriteable(zeros(UInt8, 128))
+    n_compressed = compress!(compressor, compressed, input)
+    @test n_compressed isa Int
+
+    output = CustomWriteable(zeros(UInt8, 128))
+    result = decompress!(
+        Decompressor(),
+        output,
+        CustomReadable(compressed.data[1:n_compressed]),
+    )
+    @test result == (; read = n_compressed, written = sizeof(input.data))
+    @test output.data[1:result.written] == input.data
 end
 
 # Unsafe CRC is implicitly tested by decompressing gzip with
@@ -86,7 +118,7 @@ end
     for testdata in ["", "foo", "abracadabra!"]
         GC.@preserve testdata @test crc32(collect(codeunits(testdata))) ==
             crc32(collect(codeunits(testdata))) ==
-            unsafe_crc32(pointer(testdata), ncodeunits(testdata))
+            unsafe_crc32(ReadableMemory(testdata))
     end
 end
 
@@ -114,7 +146,7 @@ end
 
         GC.@preserve unsafe_outbuffer v unsafe_backbuffer1 unsafe_backbuffer2 begin
             c_bytes_unsafe = unsafe_compress!(
-                compressor, pointer(unsafe_outbuffer), length(outbuffer), pointer(v), length(v)
+                compressor, WriteableMemory(unsafe_outbuffer), ReadableMemory(v)
             )
             c_bytes_safe = compress!(compressor, outbuffer, v)
 
@@ -122,33 +154,29 @@ end
             @test unsafe_outbuffer[1:c_bytes_unsafe] == outbuffer[1:c_bytes_safe]
 
             d_bytes_unsafe1 = unsafe_decompress!(
-                Base.HasLength(),
                 decompressor,
-                pointer(unsafe_backbuffer1),
+                WriteableMemory(unsafe_backbuffer1),
+                ReadableMemory(pointer(unsafe_outbuffer), c_bytes_unsafe % UInt),
                 length(v),
-                pointer(unsafe_outbuffer),
-                c_bytes_unsafe,
             )
 
             d_bytes_unsafe2 = unsafe_decompress!(
-                Base.SizeUnknown(),
                 decompressor,
-                pointer(unsafe_backbuffer2),
-                length(unsafe_backbuffer2),
-                pointer(unsafe_outbuffer),
-                c_bytes_unsafe,
+                WriteableMemory(unsafe_backbuffer2),
+                ReadableMemory(pointer(unsafe_outbuffer), c_bytes_unsafe % UInt),
             )
         end
 
         d_bytes_safe1 = decompress!(decompressor, backbuffer1, outbuffer, length(v))
         d_bytes_safe2 = decompress!(decompressor, backbuffer2, outbuffer)
 
-        @test d_bytes_safe1 == d_bytes_safe2 == d_bytes_unsafe1 == d_bytes_unsafe2
+        expected = (; read = c_bytes_unsafe, written = length(v))
+        @test d_bytes_safe1 == d_bytes_safe2 == d_bytes_unsafe1 == d_bytes_unsafe2 == expected
 
         @test v ==
-            backbuffer1[1:d_bytes_safe1] ==
-            backbuffer2[1:d_bytes_safe1] ==
-            unsafe_backbuffer1[1:d_bytes_safe1] ==
-            unsafe_backbuffer2[1:d_bytes_safe1]
+            backbuffer1[1:d_bytes_safe1.written] ==
+            backbuffer2[1:d_bytes_safe1.written] ==
+            unsafe_backbuffer1[1:d_bytes_safe1.written] ==
+            unsafe_backbuffer2[1:d_bytes_safe1.written]
     end
 end

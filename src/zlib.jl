@@ -5,154 +5,160 @@
 # +---+---+===============+---+---+---+---+
 
 """
+    unsafe_zlib_decompress!(
+        ::Decompressor, output::WriteableMemory, input::ReadableMemory,
+        [n_out::Integer]
+    )::Union{LibDeflateError, Int}
+
+Decompress a zlib stream from `input` into `output`. Without `n_out`,
+`sizeof(output)` is the available capacity. If the exact decompressed size is known,
+pass it as `n_out` to use the faster known-size path. Return the number of bytes written
+or an error. The referenced memory must remain valid for the duration of the call.
+"""
+function unsafe_zlib_decompress!(
+        decompressor::Decompressor,
+        output::WriteableMemory,
+        input::ReadableMemory,
+    )::Union{LibDeflateError, Int}
+    return _unsafe_zlib_decompress!(Base.SizeUnknown(), decompressor, output, input)
+end
+
+function unsafe_zlib_decompress!(
+        decompressor::Decompressor,
+        output::WriteableMemory,
+        input::ReadableMemory,
+        n_out::Integer,
+    )::Union{LibDeflateError, Int}
+    sizeof(output) < n_out && return LibDeflateErrors.deflate_insufficient_space
+    exact_output = WriteableMemory(pointer(output), n_out % UInt)
+    return _unsafe_zlib_decompress!(
+        Base.HasLength(), decompressor, exact_output, input
+    )
+end
+
+function _unsafe_zlib_decompress!(
+        size::Union{Base.SizeUnknown, Base.HasLength},
+        decompressor::Decompressor,
+        output::WriteableMemory,
+        input::ReadableMemory,
+    )::Union{LibDeflateError, Int}
+    # Two header bytes, at least an empty DEFLATE payload, and four checksum bytes.
+    sizeof(input) < 6 && return LibDeflateErrors.zlib_input_too_short
+
+    input_ptr = Ptr{UInt8}(pointer(input))
+    header = ltoh(unsafe_load(Ptr{UInt16}(input_ptr)))
+
+    # CMF: the low nibble is the DEFLATE compression method.
+    header & 0x000f != 0x0008 && return LibDeflateErrors.zlib_not_deflate
+
+    # CINFO values 0 through 7 declare windows from 256 bytes through 32 KiB.
+    header & 0x00f0 > 0x0070 && return LibDeflateErrors.zlib_wrong_window_size
+
+    # libdeflate does not support preset dictionaries.
+    header & 0x2000 != 0x0000 && return LibDeflateErrors.zlib_needs_compression_dict
+
+    # `header` is little-endian in memory, while the zlib check uses big-endian order.
+    iszero(mod(bswap(header), UInt16(31))) || return LibDeflateErrors.zlib_bad_header_check
+
+    compressed_len = sizeof(input) - 6
+    compressed = ReadableMemory(input_ptr + 2, compressed_len % UInt)
+    decomp_result = _unsafe_decompress!(size, decompressor, output, compressed)
+    decomp_result isa LibDeflateError && return decomp_result
+
+    read = decomp_result.read
+    written = decomp_result.written
+    read == compressed_len || return LibDeflateErrors.deflate_bad_payload
+
+    expected_adler32 = ntoh(
+        unsafe_load(Ptr{UInt32}(input_ptr + sizeof(input) - 4))
+    )
+    checksum_input = ReadableMemory(pointer(output), written % UInt)
+    unsafe_adler32(checksum_input) == expected_adler32 ||
+        return LibDeflateErrors.zlib_bad_adler32
+
+    return written
+end
+
+"""
     zlib_decompress!(
         ::Decompressor, output, input, [n_out::Integer]
     )::Union{LibDeflateError, Int}
 
-Zlib decompress from `input` to `output`.
-If the precise number of decompressed bytes is known, pass it in as `n_out`
-for added performance. If it is wrong, the function will return an error.
-
-Return the number of bytes written, or a `LibDeflateError`.
-
-See also: [`unsafe_zlib_decompress!`](@ref)
+Decompress `input` as a zlib stream into `output`. If the exact decompressed size is
+known, pass it as `n_out` for the faster known-size path. Return the number of bytes
+written or an error.
 """
-function zlib_decompress! end
-
-function zlib_decompress!(
-        decompressor::Decompressor, output, input
-    )::Union{LibDeflateError, Int}
+function zlib_decompress!(decompressor::Decompressor, output, input)
     return GC.@preserve output input begin
-        write = WriteableMemory(output)
-        read = ReadableMemory(input)
-        unsafe_zlib_decompress!(
-            Base.SizeUnknown(),
-            decompressor,
-            pointer(write),
-            sizeof(write),
-            pointer(read),
-            sizeof(read),
-        )
+        _zlib_decompress!(decompressor, WriteableMemory(output), ReadableMemory(input))
     end
+end
+
+function _zlib_decompress!(
+        decompressor::Decompressor, output::WriteableMemory, input::ReadableMemory
+    )::Union{LibDeflateError, Int}
+    return unsafe_zlib_decompress!(decompressor, output, input)
 end
 
 function zlib_decompress!(
         decompressor::Decompressor, output, input, n_out::Integer
-    )::Union{LibDeflateError, Int}
+    )
     return GC.@preserve output input begin
-        write = WriteableMemory(output)
-        read = ReadableMemory(input)
-        n_out > sizeof(write) && return LibDeflateErrors.deflate_insufficient_space
-        unsafe_zlib_decompress!(
-            Base.HasLength(),
-            decompressor,
-            pointer(write),
-            n_out,
-            pointer(read),
-            sizeof(read),
+        _zlib_decompress!(
+            decompressor, WriteableMemory(output), ReadableMemory(input), n_out
         )
     end
 end
 
-"""
-    unsafe_zlib_decompress!(
-        size::Union{Base.SizeUnknown, Base.HasLength},
-        ::Decompressor,
-        out_ptr::Ptr, n_out::Integer,
-        in_ptr::Ptr, len::Integer
-    )::Union{LibDeflateError, Int}
-
-Zlib decompress data beginning at `in_ptr` and `len` bytes onwards, into `out_ptr`.
-Return the number of bytes written, or a `LibDeflateError`.
-`size`` can be `SizeUnknown` or `HasLength`. If the former, `n_out` tells how much space
-is available at the output. If the latter, `n_out` is the exact number of bytes
-that the payload decompresses to. The latter is faster.
-
-See also: [`zlib_decompress!`](@ref)
-"""
-function unsafe_zlib_decompress!(
-        size::Union{Base.SizeUnknown, Base.HasLength},
+function _zlib_decompress!(
         decompressor::Decompressor,
-        out_ptr::Ptr,
+        output::WriteableMemory,
+        input::ReadableMemory,
         n_out::Integer,
-        in_ptr::Ptr,
-        len::Integer,
     )::Union{LibDeflateError, Int}
-    # Must be at least 6 bytes in length + compressed
-    len < 6 && return LibDeflateErrors.zlib_input_too_short
-
-    ptr = in_ptr
-    header = ltoh(unsafe_load(Ptr{UInt16}(ptr)))
-    ptr += 2
-
-    # Parse CMF: First 4 bits must be 0x8 = DEFLATE algorithm
-    header & 0x000f != 0x0008 && return LibDeflateErrors.zlib_not_deflate
-
-    # CINFO values 0 through 7 declare window sizes from 256 bytes through 32 KiB.
-    # Values above 7 are not valid for the DEFLATE compression method.
-    header & 0x00f0 > 0x0070 && return LibDeflateErrors.zlib_wrong_window_size
-
-    # libdeflate does not support a custom decompression dict, I think
-    header & 0x2000 != 0x0000 && return LibDeflateErrors.zlib_needs_compression_dict
-
-    # `header` was normalized as little-endian above so CMF occupies the low byte.
-    # Swap its bytes unconditionally to interpret CMF and FLG as a big-endian integer.
-    iszero(mod(bswap(header), UInt16(31))) || return LibDeflateErrors.zlib_bad_header_check
-
-    # Decompress payload
-    compressed_len = len - 6
-    decomp_result = unsafe_decompress_ex!(
-        size, decompressor, out_ptr, n_out, ptr, compressed_len
-    )
-    decomp_result isa LibDeflateError && return decomp_result
-    consumed, nbytes = decomp_result
-    consumed == compressed_len || return LibDeflateErrors.deflate_bad_payload
-
-    # Then check adler32, also stored as big-endian
-    exp_adler32 = ntoh(unsafe_load(Ptr{UInt32}(in_ptr) + len - 4))
-    obs_adler32 = unsafe_adler32(out_ptr, nbytes)
-    obs_adler32 == exp_adler32 || return LibDeflateErrors.zlib_bad_adler32
-
-    return nbytes
+    return unsafe_zlib_decompress!(decompressor, output, input, n_out)
 end
 
 """
-    zlib_compress!(
-        ::Compressor, output, input
-    )::Union{LibDeflateError, Int}
+    zlib_compress_bound(compressor::Compressor, input_size::Int)::Int
 
-Zlib compress from `input` to `output`.
-Return the number of bytes written, or a `LibDeflateError`.
+Return a worst-case upper bound on the number of bytes produced by
+[`zlib_compress!`](@ref) when compressing `input_size` bytes with `compressor`.
 
-See also: [`unsafe_zlib_compress!`](@ref)
+The bound may overestimate the required space, but an output buffer of this size is
+guaranteed to be sufficient. This calculation does not inspect any input data and is
+constant-time with respect to `input_size`.
 """
-function zlib_compress!(compressor::Compressor, output, input)::Union{LibDeflateError, Int}
+function zlib_compress_bound(compressor::Compressor, input_size::Int)::Int
+    return deflate_compress_bound(compressor, input_size) + 6
+end
+
+"""
+    zlib_compress!(::Compressor, output, input)::Union{LibDeflateError, Int}
+
+Compress `input` as a zlib stream into `output`, returning the number of bytes written
+or an error.
+"""
+function zlib_compress!(compressor::Compressor, output, input)
     return GC.@preserve output input begin
-        write = WriteableMemory(output)
-        read = ReadableMemory(input)
-        unsafe_zlib_compress!(
-            compressor, pointer(write), sizeof(write), pointer(read), sizeof(read)
-        )
+        unsafe_zlib_compress!(compressor, WriteableMemory(output), ReadableMemory(input))
     end
 end
 
 """
     unsafe_zlib_compress!(
-        ::Compressor,
-        out_ptr::Ptr, max_outlen::Integer,
-        in_ptr::Ptr, len::Integer
+        ::Compressor, output::WriteableMemory, input::ReadableMemory
     )::Union{LibDeflateError, Int}
 
-Zlib compress data beginning at `in_ptr` and `len` bytes onwards, into `out_ptr`.
-Return the number of bytes written, or a `LibDeflateError`.
-
-See also: [`zlib_compress!`](@ref)
+Compress `input` as a zlib stream into `output`, returning the number of bytes written
+or an error.
 """
 function unsafe_zlib_compress!(
-        compressor::Compressor, out_ptr::Ptr, max_outlen::Integer, in_ptr::Ptr, len::Integer
+        compressor::Compressor, output::WriteableMemory, input::ReadableMemory
     )::Union{LibDeflateError, Int}
-    max_outlen < 6 && return LibDeflateErrors.zlib_insufficient_space
-    # Be sure to check that all these 4 results are zero mod 31 when big-endian ordered
+    sizeof(output) < 6 && return LibDeflateErrors.zlib_insufficient_space
+
+    # Each header is divisible by 31 when interpreted in big-endian order.
     header = if compressor.level == 1
         0x0178
     elseif compressor.level == DEFAULT_COMPRESSION_LEVEL
@@ -162,12 +168,14 @@ function unsafe_zlib_compress!(
     else
         0x9c78
     end
-    unsafe_store!(Ptr{UInt16}(out_ptr), htol(header))
-    out_ptr += 2
-    n_bytes = unsafe_compress!(compressor, out_ptr, max_outlen - 6, in_ptr, len)
+
+    output_ptr = Ptr{UInt8}(pointer(output))
+    unsafe_store!(Ptr{UInt16}(output_ptr), htol(header))
+    compressed_output = WriteableMemory(output_ptr + 2, (sizeof(output) - 6) % UInt)
+    n_bytes = unsafe_compress!(compressor, compressed_output, input)
     n_bytes isa LibDeflateError && return n_bytes
-    out_ptr += n_bytes
-    # Alder32 is also big-endian stored
-    unsafe_store!(Ptr{UInt32}(out_ptr), hton(unsafe_adler32(in_ptr, len)))
+
+    # Adler-32 is stored in big-endian order after the payload.
+    unsafe_store!(Ptr{UInt32}(output_ptr + 2 + n_bytes), hton(unsafe_adler32(input)))
     return n_bytes + 6
 end
