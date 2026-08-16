@@ -187,8 +187,9 @@ mutable struct Decompressor
     actual_in_nbytes_ret::UInt
 
     function Decompressor()
+        ptr = @ccall gc_safe = true libdeflate.libdeflate_alloc_decompressor()::Ptr{Cvoid}
         decompressor = new(
-            ccall((:libdeflate_alloc_decompressor, libdeflate), Ptr{Nothing}, ()),
+            ptr,
             zero(UInt),
             zero(UInt),
         )
@@ -200,9 +201,11 @@ end
 Base.unsafe_convert(::Type{Ptr{Nothing}}, x::Decompressor) = x.ptr
 
 function free_decompressor(decompressor::Decompressor)
-    ccall(
-        (:libdeflate_free_decompressor, libdeflate), Nothing, (Ptr{Nothing},), decompressor
-    )
+    GC.@preserve decompressor begin
+        @ccall gc_safe = true libdeflate.libdeflate_free_decompressor(
+            decompressor::Ptr{Cvoid}
+        )::Cvoid
+    end
     return nothing
 end
 
@@ -225,12 +228,9 @@ mutable struct Compressor
     function Compressor(compresslevel::UInt8 = DEFAULT_COMPRESSION_LEVEL)
         compresslevel in UInt8(1):UInt8(12) ||
             throw(ArgumentError("Compresslevel must be in 1:12"))
-        ptr = ccall(
-            (:libdeflate_alloc_compressor, libdeflate),
-            Ptr{Nothing},
-            (Cint,),
-            compresslevel % Cint,
-        )
+        ptr = @ccall gc_safe = true libdeflate.libdeflate_alloc_compressor(
+            (compresslevel % Cint)::Cint
+        )::Ptr{Cvoid}
         compressor = new(ptr, compresslevel)
         finalizer(free_compressor, compressor)
         return compressor
@@ -241,7 +241,11 @@ Base.unsafe_convert(::Type{Ptr{Nothing}}, x::Compressor) = x.ptr
 
 # Called by the garbage collecter, do not use manually
 function free_compressor(compressor::Compressor)
-    ccall((:libdeflate_free_compressor, libdeflate), Nothing, (Ptr{Nothing},), compressor)
+    GC.@preserve compressor begin
+        @ccall gc_safe = true libdeflate.libdeflate_free_compressor(
+            compressor::Ptr{Cvoid}
+        )::Cvoid
+    end
     return nothing
 end
 
@@ -255,26 +259,17 @@ function _unsafe_decompress!(
         actual_in_nbytes_ret::Ptr,
         actual_out_nbytes_ret::Ptr,
     )::Union{LibDeflateError, Nothing}
-    status = ccall(
-        (:libdeflate_deflate_decompress_ex, libdeflate),
-        Cint,
-        (
-            Ptr{Nothing},
-            Ptr{UInt8},
-            Csize_t,
-            Ptr{UInt8},
-            Csize_t,
-            Ptr{Csize_t},
-            Ptr{Csize_t},
-        ),
-        decompressor,
-        pointer(in),
-        in.len,
-        pointer(out),
-        out.len,
-        actual_in_nbytes_ret,
-        actual_out_nbytes_ret,
-    )
+    status = GC.@preserve decompressor begin
+        @ccall gc_safe = true libdeflate.libdeflate_deflate_decompress_ex(
+            decompressor::Ptr{Cvoid},
+            pointer(in)::Ptr{UInt8},
+            in.len::Csize_t,
+            pointer(out)::Ptr{UInt8},
+            out.len::Csize_t,
+            actual_in_nbytes_ret::Ptr{Csize_t},
+            actual_out_nbytes_ret::Ptr{Csize_t}
+        )::Cint
+    end
     if status == Cint(1)
         return LibDeflateErrors.deflate_bad_payload
     elseif status == Cint(2)
@@ -438,13 +433,11 @@ guaranteed to be sufficient. This calculation does not inspect any input data an
 constant-time with respect to `input_size`.
 """
 function deflate_compress_bound(compressor::Compressor, input_size::UInt)::UInt
-    return ccall(
-        (:libdeflate_deflate_compress_bound, libdeflate),
-        Csize_t,
-        (Ptr{Nothing}, Csize_t),
-        compressor,
-        input_size,
-    )
+    return GC.@preserve compressor begin
+        @ccall gc_safe = true libdeflate.libdeflate_deflate_compress_bound(
+            compressor::Ptr{Cvoid}, input_size::Csize_t
+        )::Csize_t
+    end
 end
 
 """
@@ -461,16 +454,15 @@ See also: [`compress!`](@ref)
 function unsafe_compress!(
         compressor::Compressor, out::WriteableMemory, in::ReadableMemory
     )::Union{LibDeflateError, UInt}
-    bytes = ccall(
-        (:libdeflate_deflate_compress, libdeflate),
-        Csize_t,
-        (Ptr{Nothing}, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t),
-        compressor,
-        pointer(in),
-        in.len,
-        pointer(out),
-        out.len,
-    )
+    bytes = GC.@preserve compressor begin
+        @ccall gc_safe = true libdeflate.libdeflate_deflate_compress(
+            compressor::Ptr{Cvoid},
+            pointer(in)::Ptr{UInt8},
+            in.len::Csize_t,
+            pointer(out)::Ptr{UInt8},
+            out.len::Csize_t
+        )::Csize_t
+    end
     iszero(bytes) && return LibDeflateErrors.deflate_insufficient_space
     return bytes
 end
@@ -500,14 +492,9 @@ in the Julia standard library.
 See also: [`crc32`](@ref)
 """
 function unsafe_crc32(in::ReadableMemory, start::UInt32 = UInt32(0))::UInt32
-    return ccall(
-        (:libdeflate_crc32, libdeflate),
-        UInt32,
-        (UInt32, Ptr{UInt8}, Csize_t),
-        start,
-        pointer(in),
-        in.len,
-    )
+    return @ccall gc_safe = true libdeflate.libdeflate_crc32(
+        start::UInt32, pointer(in)::Ptr{UInt8}, in.len::Csize_t
+    )::UInt32
 end
 
 """
@@ -528,14 +515,9 @@ with seed `start` (default is 1).
 See also: [`adler32`](@ref)
 """
 function unsafe_adler32(in::ReadableMemory, start::UInt32 = UInt32(1))::UInt32
-    return ccall(
-        (:libdeflate_adler32, libdeflate),
-        UInt32,
-        (UInt32, Ptr{UInt8}, Csize_t),
-        start,
-        pointer(in),
-        in.len,
-    )
+    return @ccall gc_safe = true libdeflate.libdeflate_adler32(
+        start::UInt32, pointer(in)::Ptr{UInt8}, in.len::Csize_t
+    )::UInt32
 end
 
 """

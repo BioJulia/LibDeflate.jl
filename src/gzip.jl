@@ -2,7 +2,9 @@
 # pointer must point to first byte where the search begins
 # This can be SIMD'd but it's way fast anyway.
 function bytes_until_zero(p::Ptr{UInt8}, lastindex::UInt)::Union{UInt, Nothing}
-    pos = @ccall memchr(p::Ptr{UInt8}, 0x00::Cint, lastindex::Csize_t)::Ptr{Cchar}
+    pos = @ccall gc_safe = true memchr(
+        p::Ptr{UInt8}, 0x00::Cint, lastindex::Csize_t
+    )::Ptr{Cchar}
     return pos == C_NULL ? nothing : (pos - p) % UInt
 end
 
