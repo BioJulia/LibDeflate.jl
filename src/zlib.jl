@@ -14,6 +14,26 @@ Decompress a zlib stream from `input` into `output`. Without `n_out`,
 `sizeof(output)` is the available capacity. If the exact decompressed size is known,
 pass it as `n_out` to use the faster known-size path. Return the number of bytes written
 or an error. The referenced memory must remain valid for the duration of the call.
+
+# Examples:
+```jldoctest
+julia> compressed = vcat(
+           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
+           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
+       ); # zlib "Hello, world!"
+
+julia> out = zeros(UInt8, 13);
+
+julia> w = GC.@preserve compressed out begin
+           unsafe_zlib_decompress!(decompressor, WriteableMemory(out), ReadableMemory(compressed))
+       end;
+
+julia> w === UInt(13)
+true
+
+julia> String(out)
+"Hello, world!"
+```
 """
 function unsafe_zlib_decompress!(
         decompressor::Decompressor,
@@ -87,6 +107,21 @@ end
 Decompress `input` as a zlib stream into `output`. If the exact decompressed size is
 known, pass it as `n_out` for the faster known-size path. Return the number of bytes
 written or an error.
+
+# Examples:
+```jldoctest
+julia> compressed = vcat(
+           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
+           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
+       ); # zlib "Hello, world!"
+
+julia> out = zeros(UInt8, 13);
+
+julia> zlib_decompress!(decompressor, out, compressed);
+
+julia> String(out)
+"Hello, world!"
+```
 """
 function zlib_decompress!(
         decompressor::Decompressor, output, input
@@ -130,6 +165,14 @@ Return a worst-case upper bound on the number of bytes produced by
 The bound may overestimate the required space, but an output buffer of this size is
 guaranteed to be sufficient. This calculation does not inspect any input data and is
 constant-time with respect to `input_size`.
+
+# Examples:
+```jldoctest
+julia> bound = zlib_compress_bound(compressor, UInt(1000));
+
+julia> bound >= 1000
+true
+```
 """
 function zlib_compress_bound(compressor::Compressor, input_size::UInt)::UInt
     return deflate_compress_bound(compressor, input_size) + UInt(6)
@@ -140,6 +183,21 @@ end
 
 Compress `input` as a zlib stream into `output`, returning the number of bytes written
 or an error.
+
+# Examples:
+```jldoctest
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, zlib_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = zlib_compress!(compressor, out, data);
+
+julia> out[1:n] == vcat(
+           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
+           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
+       )
+true
+```
 """
 function zlib_compress!(
         compressor::Compressor, output, input
@@ -156,6 +214,23 @@ end
 
 Compress `input` as a zlib stream into `output`, returning the number of bytes written
 or an error.
+
+# Examples:
+```jldoctest
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, zlib_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = GC.@preserve data out begin
+           unsafe_zlib_compress!(compressor, WriteableMemory(out), ReadableMemory(data))
+       end;
+
+julia> out[1:n] == vcat(
+           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
+           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
+       )
+true
+```
 """
 function unsafe_zlib_compress!(
         compressor::Compressor, output::WriteableMemory, input::ReadableMemory

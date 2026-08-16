@@ -99,7 +99,7 @@ end
     test_header_example(header_data, header)
 
     result = GC.@preserve header_data unsafe_parse_gzip_header(
-        ReadableMemory(header_data), LibDeflate.GzipExtraField[]
+        ReadableMemory(header_data); extra_data = LibDeflate.GzipExtraField[]
     )
     header = result.header
     test_header_example(header_data, header)
@@ -142,7 +142,7 @@ end
     push!(extra_data, sentinel)
     short_header = header_without_extra[1:9]
     @test GC.@preserve short_header unsafe_parse_gzip_header(
-        ReadableMemory(short_header), extra_data
+        ReadableMemory(short_header); extra_data
     ) == LibDeflateErrors.gzip_header_too_short
     @test isempty(extra_data)
 end
@@ -231,9 +231,11 @@ test_filename = "testfile.foo"
         )
         outdata = zeros(UInt8, bound)
         n_bytes = GC.@preserve data outdata unsafe_gzip_compress!(
-            compressor, WriteableMemory(outdata), ReadableMemory(data),
-            LibDeflate.ReadableMemory(test_comment), LibDeflate.ReadableMemory(test_filename),
-            LibDeflate.ReadableMemory(data_test_cases[1]), true
+            compressor, WriteableMemory(outdata), ReadableMemory(data);
+            comment = LibDeflate.ReadableMemory(test_comment),
+            filename = LibDeflate.ReadableMemory(test_filename),
+            extra = LibDeflate.ReadableMemory(data_test_cases[1]),
+            header_crc = true,
         )
         @test n_bytes isa UInt
         @test n_bytes <= bound

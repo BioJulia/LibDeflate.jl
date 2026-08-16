@@ -24,6 +24,25 @@ Data structure for gzip extra data. Fields:
 * `tag::NTuple{2, UInt8}` two-byte tag
 * `data::Union{Nothing, UnitRange{UInt}}` location of subfield data in original vector,
 or `nothing` if empty.
+
+# Examples:
+```jldoctest
+julia> header_bytes = b"\\x1f\\x8b\\x08\\x04\\0\\0\\0\\0\\0\\xff"; # FEXTRA flag set
+
+julia> extra_bytes = b"\\x06\\0\\x41\\x42\\x02\\0\\x01\\x02"; # XLEN, tag, len, data
+
+julia> bytes = vcat(header_bytes, extra_bytes);
+
+julia> fields = GzipExtraField[];
+
+julia> parse_gzip_header(bytes; extra_data=fields);
+
+julia> fields[1].tag
+(0x41, 0x42)
+
+julia> bytes[fields[1].data] == b"\\x01\\x02"
+true
+```
 """
 struct GzipExtraField
     tag::Tuple{UInt8, UInt8} # (SI1, SI2)
@@ -89,6 +108,14 @@ Gzip extra data cannot exceed `typemax(UInt16)` bytes.
 The memory referenced by `data` must remain valid for the duration of the call.
 
 See also: [`is_valid_extra_data`](@ref)
+
+# Examples:
+```jldoctest
+julia> data = b"\\x41\\x42\\x02\\0\\x01\\x02"; # tag, 2-byte length, 2 bytes data
+
+julia> GC.@preserve data unsafe_is_valid_extra_data(ReadableMemory(data))
+true
+```
 """
 function unsafe_is_valid_extra_data(data::ReadableMemory)::Bool
     data.len > typemax(UInt16) && return false
@@ -114,6 +141,15 @@ Check whether `data` represents valid gzip metadata for the "extra" field.
 Custom input types can opt in by implementing `ReadableMemory(data)`.
 
 See also: [`unsafe_is_valid_extra_data`](@ref)
+
+# Examples:
+```jldoctest
+julia> is_valid_extra_data(b"\\x41\\x42\\x02\\0\\x01\\x02")
+true
+
+julia> is_valid_extra_data(b"\\x41\\x42\\x02\\0\\x01") # too short for declared length
+false
+```
 """
 function is_valid_extra_data(data)::Bool
     return GC.@preserve data unsafe_is_valid_extra_data(ReadableMemory(data))
@@ -127,6 +163,18 @@ Struct representing a gzip header. It has the following fields:
 * `filename::Union{Nothing, UnitRange{UInt}}` index of filename in header
 * `comment::Union{Nothing, UnitRange{UInt}}` index of comment in header
 * `extra::Union{Nothing, Vector{GzipExtraField}}` Extra gzip fields, if applicable.
+
+# Examples:
+```jldoctest
+julia> header_bytes = b"\\x1f\\x8b\\x08\\x08\\0\\0\\0\\0\\0\\xff";
+
+julia> bytes = vcat(header_bytes, b"hi", b"\\0"); # gzip header, filename "hi"
+
+julia> header = parse_gzip_header(bytes).header;
+
+julia> String(bytes[header.filename])
+"hi"
+```
 """
 struct GzipHeader
     mtime::UInt32
@@ -144,16 +192,31 @@ Parse the input data, returning the number of bytes read and a `GzipHeader`, or 
 `LibDeflateError`.
 If a vector of gzip extra data is passed, the parser empties it before validation and
 then reuses it for the parsed fields.
+
+# Examples:
+```jldoctest
+julia> header_bytes = b"\\x1f\\x8b\\x08\\x08\\0\\0\\0\\0\\0\\xff";
+
+julia> bytes = vcat(header_bytes, b"hi", b"\\0"); # gzip header, filename "hi"
+
+julia> result = parse_gzip_header(bytes);
+
+julia> result.read === UInt(13)
+true
+
+julia> String(bytes[result.header.filename])
+"hi"
+```
 """
 function parse_gzip_header(
         in; extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing
     )::Union{LibDeflateError, @NamedTuple{read::UInt, header::GzipHeader}}
-    return GC.@preserve in unsafe_parse_gzip_header(ReadableMemory(in), extra_data)
+    return GC.@preserve in unsafe_parse_gzip_header(ReadableMemory(in); extra_data)
 end
 
 """
     unsafe_parse_gzip_header(
-        input::ReadableMemory,
+        input::ReadableMemory;
         extra_data::Union{Vector{GzipExtraField}, Nothing}=nothing
     )
 
@@ -162,9 +225,19 @@ Parse the input data, returning the number of bytes read and a `GzipHeader`, or 
 The parser will not read more than `sizeof(input)` bytes. If a vector of gzip extra
 data is passed, it empties the vector before validation and then reuses it instead of
 allocating another one.
+
+# Examples:
+```jldoctest
+julia> header_bytes = b"\\x1f\\x8b\\x08\\x08\\0\\0\\0\\0\\0\\xff";
+
+julia> bytes = vcat(header_bytes, b"hi", b"\\0"); # gzip header, filename "hi"
+
+julia> GC.@preserve bytes unsafe_parse_gzip_header(ReadableMemory(bytes)).read === UInt(13)
+true
+```
 """
 function unsafe_parse_gzip_header(
-        input::ReadableMemory,
+        input::ReadableMemory;
         extra_data::Union{Vector{GzipExtraField}, Nothing} = nothing,
     )::Union{LibDeflateError, @NamedTuple{read::UInt, header::GzipHeader}}
     extra_data === nothing || empty!(extra_data)
@@ -265,6 +338,24 @@ It has the following fields:
 * `written::UInt` number of decompressed bytes written
 * `read::UInt` number of bytes read from input
 * `header::GzipHeader` metadata
+
+# Examples:
+```jldoctest
+julia> compressed = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c",
+           b"\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\xe6\\xc6\\xe6\\xeb\\x0d\\0\\0\\0",
+       ); # gzip "Hello, world!"
+
+julia> out = zeros(UInt8, 13);
+
+julia> result = gzip_decompress!(decompressor, out, compressed);
+
+julia> result.written === UInt(13)
+true
+
+julia> String(out)
+"Hello, world!"
+```
 """
 struct GzipDecompressResult
     written::UInt # number of decompressed bytes written
@@ -286,6 +377,26 @@ It has the following fields:
 * `read::UInt`: total input bytes occupied by the completed members
 * `written::UInt`: total decompressed bytes written by the completed members
 * `members::UInt`: number of completed members
+
+# Examples:
+```jldoctest
+julia> combined = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
+           b"\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x82\\x89\\xd1\\xf7\\x05\\0\\0\\0",
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
+           b"\\xff\\x57\\x6f\\x72\\x6c\\x64\\x47\\x3e\\xb6\\xfb\\x05\\0\\0\\0",
+       ); # gzip "Hello", then gzip "World"
+
+julia> out = zeros(UInt8, 10);
+
+julia> result = gzip_decompress_all!(decompressor, out, combined);
+
+julia> result.members === UInt(2)
+true
+
+julia> String(out)
+"HelloWorld"
+```
 """
 const GzipDecompressAllResult =
     @NamedTuple{read::UInt, written::UInt, members::UInt}
@@ -306,6 +417,21 @@ On success, the returned result reports both the decompressed length and the tot
 number of input bytes consumed by that member. Following gzip members or trailing data
 are left unread. Custom input and output types can opt in by implementing
 `ReadableMemory(input)` and `WriteableMemory(output)`, respectively.
+
+# Examples:
+```jldoctest
+julia> compressed = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c",
+           b"\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\xe6\\xc6\\xe6\\xeb\\x0d\\0\\0\\0",
+       ); # gzip "Hello, world!"
+
+julia> out = zeros(UInt8, 13);
+
+julia> gzip_decompress!(decompressor, out, compressed);
+
+julia> String(out)
+"Hello, world!"
+```
 """
 function gzip_decompress!(
         decompressor::Decompressor,
@@ -360,6 +486,26 @@ data are left unread.
 Return a `GzipDecompressResult` on success.
 
 See also: [`gzip_decompress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> compressed = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c",
+           b"\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\xe6\\xc6\\xe6\\xeb\\x0d\\0\\0\\0",
+       ); # gzip "Hello, world!"
+
+julia> out = zeros(UInt8, 13);
+
+julia> result = GC.@preserve compressed out begin
+           unsafe_gzip_decompress!(decompressor, WriteableMemory(out), ReadableMemory(compressed))
+       end;
+
+julia> result.written === UInt(13)
+true
+
+julia> String(out)
+"Hello, world!"
+```
 """
 function unsafe_gzip_decompress!(
         decompressor::Decompressor,
@@ -402,7 +548,7 @@ function _unsafe_gzip_decompress!(
 
     # First decompress header
     header_input = ReadableMemory(pointer(in), len - nonheader_min_len)
-    hdr_result = unsafe_parse_gzip_header(header_input, extra_data)
+    hdr_result = unsafe_parse_gzip_header(header_input; extra_data)
     hdr_result isa LibDeflateError && return hdr_result
     header_len = hdr_result.read
     header = hdr_result.header
@@ -460,6 +606,26 @@ ranges indexed into the full `input`. Custom input and output types can opt in b
 implementing `ReadableMemory(input)` and `WriteableMemory(output)`, respectively.
 
 See also: [`gzip_decompress!`](@ref), [`unsafe_gzip_decompress_all!`](@ref)
+
+# Examples:
+```jldoctest
+julia> combined = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
+           b"\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x82\\x89\\xd1\\xf7\\x05\\0\\0\\0",
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
+           b"\\xff\\x57\\x6f\\x72\\x6c\\x64\\x47\\x3e\\xb6\\xfb\\x05\\0\\0\\0",
+       ); # gzip "Hello", then gzip "World"
+
+julia> out = zeros(UInt8, 10);
+
+julia> result = gzip_decompress_all!(decompressor, out, combined);
+
+julia> result.members === UInt(2)
+true
+
+julia> String(out)
+"HelloWorld"
+```
 """
 function gzip_decompress_all!(
         decompressor::Decompressor,
@@ -503,6 +669,30 @@ the duration of the call.
 If `extra_data` is not `nothing`, empty it before processing and reuse it while parsing
 each header; after success it contains the extra fields from the final member, with data
 ranges indexed into the full `input`.
+
+# Examples:
+```jldoctest
+julia> combined = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
+           b"\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x82\\x89\\xd1\\xf7\\x05\\0\\0\\0",
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
+           b"\\xff\\x57\\x6f\\x72\\x6c\\x64\\x47\\x3e\\xb6\\xfb\\x05\\0\\0\\0",
+       ); # gzip "Hello", then gzip "World"
+
+julia> out = zeros(UInt8, 10);
+
+julia> result = GC.@preserve combined out begin
+           w = WriteableMemory(out)
+           r = ReadableMemory(combined)
+           unsafe_gzip_decompress_all!(decompressor, w, r)
+       end;
+
+julia> result.members === UInt(2)
+true
+
+julia> String(out)
+"HelloWorld"
+```
 """
 function unsafe_gzip_decompress_all!(
         decompressor::Decompressor,
@@ -583,6 +773,16 @@ represents a present but empty field. Pass `UInt(0)` or `UInt16(0)`, as appropri
 The bound may overestimate the required space, but an output buffer of this size is
 guaranteed to be sufficient. This calculation does not inspect any input or metadata
 and is constant-time with respect to all supplied sizes.
+
+# Examples:
+```jldoctest
+julia> bound = gzip_compress_bound(compressor, UInt(100));
+
+julia> bound_with_name = gzip_compress_bound(compressor, UInt(100); filename_len=UInt(8));
+
+julia> bound_with_name > bound
+true
+```
 """
 function gzip_compress_bound(
         compressor::Compressor,
@@ -609,6 +809,21 @@ The output is never resized.
 Use [`gzip_compress_bound`](@ref) to determine an output size that is guaranteed to
 be sufficient. Custom input, output, and metadata types can opt in by implementing
 `ReadableMemory` and `WriteableMemory`.
+
+# Examples:
+```jldoctest
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, gzip_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = gzip_compress!(compressor, out, data);
+
+julia> out[1:3] == b"\\x1f\\x8b\\x08" # gzip magic bytes and DEFLATE method
+true
+
+julia> out[(n - 3):n] == b"\\x0d\\0\\0\\0" # ISIZE trailer: length of "Hello, world!"
+true
+```
 """
 function gzip_compress!(
         compressor::Compressor,
@@ -642,50 +857,57 @@ function _gzip_compress!(
         header_crc::Bool,
     )::Union{LibDeflateError, UInt}
     return unsafe_gzip_compress!(
-        compressor,
-        output,
-        input,
-        comment,
-        filename,
-        extra,
-        header_crc,
+        compressor, output, input;
+        comment, filename, extra, header_crc,
     )
 end
 
 """
     unsafe_gzip_compress!(
-        compressor::Compressor,
-        out::WriteableMemory,
-        in::ReadableMemory,
-        comment::Union{Nothing, ReadableMemory},
-        filename::Union{Nothing, ReadableMemory},
-        extra::Union{Nothing, ReadableMemory},
-        header_crc::Bool
+        compressor::Compressor, out::WriteableMemory, in::ReadableMemory;
+        comment=nothing, filename=nothing, extra=nothing, header_crc=false
     )::Union{LibDeflateError, UInt}
 
 Use the `Compressor` to gzip compress input at `pointer(in)` and `sizeof(in)` bytes onwards
 to, `pointer(out)`.
 If the resulting gzip data does not fit in `sizeof(out)`, return
 `LibDeflate.deflate_insufficient_space`.
-Optionally, include gzip comment, filename or extra data. All these must be `nothing` if
-not applicable.
+Optionally, include gzip comment, filename or extra data. All these are omitted if left
+at their default of `nothing`.
 
-Adds optional data `comment`, `filename`, `extra`. 
+Adds optional data `comment`, `filename`, `extra`.
 * `comment` and `filename` must not include the byte `0x00`.
 * `extra` must be at most `typemax(UInt16)` bytes long.
 
 Returns the number of bytes written to `pointer(out)`.
 
 See also: [`gzip_compress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, gzip_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = GC.@preserve data out begin
+           unsafe_gzip_compress!(compressor, WriteableMemory(out), ReadableMemory(data))
+       end;
+
+julia> out[1:3] == b"\\x1f\\x8b\\x08" # gzip magic bytes and DEFLATE method
+true
+
+julia> out[(n - 3):n] == b"\\x0d\\0\\0\\0" # ISIZE trailer: length of "Hello, world!"
+true
+```
 """
 function unsafe_gzip_compress!(
         compressor::Compressor,
         out::WriteableMemory,
-        in::ReadableMemory,
-        comment::Union{Nothing, ReadableMemory},
-        filename::Union{Nothing, ReadableMemory},
-        extra::Union{Nothing, ReadableMemory},
-        header_crc::Bool,
+        in::ReadableMemory;
+        comment::Union{Nothing, ReadableMemory}=nothing,
+        filename::Union{Nothing, ReadableMemory}=nothing,
+        extra::Union{Nothing, ReadableMemory}=nothing,
+        header_crc::Bool=false,
     )::Union{LibDeflateError, UInt}
     out_len = out.len
     extra_len = extra === nothing ? nothing : UInt16(extra.len)

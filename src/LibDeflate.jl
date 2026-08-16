@@ -49,7 +49,25 @@ module LibDeflateErrors
     A `UInt8` enum representing that LibDeflate encountered an error. The numerical value
     of the errors are not stable across non-breaking releases, but their names are.
     Code checking for specific errors should check by e.g. ` == LibDeflateErrors.gzip_not_deflate`.
-    Successful operations will never return a `LibDeflateError`.
+    Successful operations will not return a `LibDeflateError`.
+
+    # Examples:
+    ```jldoctest
+    julia> c = vcat(
+               b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c",
+               b"\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21",
+           );
+
+    julia> out = zeros(UInt8, 2); # too small to hold the decompressed data
+
+    julia> err = decompress!(decompressor, out, c);
+
+    julia> err isa LibDeflateError
+    true
+
+    julia> err == LibDeflateErrors.deflate_insufficient_space
+    true
+    ```
     """
     LibDeflateError
 
@@ -180,6 +198,21 @@ Creating this object allocates, so when decompressing multiple blocks, keep
 the same decompressor in memory rather than making one for each block.
 
 See also: [`decompress!`](@ref), [`unsafe_decompress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> decompressor = Decompressor();
+
+julia> compressed =
+       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21";
+
+julia> out = zeros(UInt8, 13);
+
+julia> decompress!(decompressor, out, compressed);
+
+julia> String(out)
+"Hello, world!"
+```
 """
 mutable struct Decompressor
     const ptr::Ptr{Nothing}
@@ -220,6 +253,21 @@ Creating this object allocates, so when compressing multiple blocks, keep
 the same compressor in memory rather than making one for each block.
 
 See also: [`compress!`](@ref), [`unsafe_compress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> compressor = Compressor();
+
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, deflate_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = compress!(compressor, out, data);
+
+julia> out[1:n] ==
+       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21"
+true
+```
 """
 mutable struct Compressor
     const ptr::Ptr{Nothing}
@@ -323,6 +371,24 @@ On success, return the number of bytes read from `input` and written to `output`
 The referenced memory must remain valid for the duration of the call.
 
 See also: [`decompress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> compressed =
+       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21";
+
+julia> out = zeros(UInt8, 13);
+
+julia> result = GC.@preserve compressed out begin
+           unsafe_decompress!(decompressor, WriteableMemory(out), ReadableMemory(compressed))
+       end;
+
+julia> result.written === UInt(13)
+true
+
+julia> String(out)
+"Hello, world!"
+```
 """
 function unsafe_decompress!(
         decompressor::Decompressor,
@@ -358,6 +424,19 @@ an error if the size is incorrect.
 
 Custom input and output types can opt in by implementing `ReadableMemory(input)`
 and `WriteableMemory(output)`, respectively.
+
+# Examples:
+```jldoctest
+julia> compressed =
+       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21";
+
+julia> out = zeros(UInt8, 13);
+
+julia> decompress!(decompressor, out, compressed);
+
+julia> String(out)
+"Hello, world!"
+```
 """
 function decompress!(
         decompressor::Decompressor, output, input, n_out::UInt
@@ -431,6 +510,14 @@ Return a worst-case upper bound on the number of bytes produced by
 The bound may overestimate the required space, but an output buffer of this size is
 guaranteed to be sufficient. This calculation does not inspect any input data and is
 constant-time with respect to `input_size`.
+
+# Examples:
+```jldoctest
+julia> bound = deflate_compress_bound(compressor, UInt(1000));
+
+julia> bound >= 1000
+true
+```
 """
 function deflate_compress_bound(compressor::Compressor, input_size::UInt)::UInt
     return GC.@preserve compressor begin
@@ -450,6 +537,21 @@ Use the passed `Compressor` to compress the bytes in `in` into `out`.
 Return the number of written bytes to the output, or a `LibDeflateError`.
 
 See also: [`compress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, deflate_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = GC.@preserve data out begin
+           unsafe_compress!(compressor, WriteableMemory(out), ReadableMemory(data))
+       end;
+
+julia> out[1:n] ==
+       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21"
+true
+```
 """
 function unsafe_compress!(
         compressor::Compressor, out::WriteableMemory, in::ReadableMemory
@@ -475,6 +577,19 @@ the number of bytes written or a `LibDeflateError`.
 
 Custom input and output types can opt in by implementing `ReadableMemory(input)`
 and `WriteableMemory(output)`, respectively.
+
+# Examples:
+```jldoctest
+julia> data = b"Hello, world!";
+
+julia> out = zeros(UInt8, deflate_compress_bound(compressor, UInt(sizeof(data))));
+
+julia> n = compress!(compressor, out, data);
+
+julia> out[1:n] ==
+       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21"
+true
+```
 """
 function compress!(compressor::Compressor, output, input)::Union{LibDeflateError, UInt}
     return GC.@preserve output input begin
@@ -490,6 +605,14 @@ Note that crc32 is a different and slower algorithm than the `crc32c` provided
 in the Julia standard library.
 
 See also: [`crc32`](@ref)
+
+# Examples:
+```jldoctest
+julia> data = b"hello world";
+
+julia> GC.@preserve data unsafe_crc32(ReadableMemory(data))
+0x0d4a1185
+```
 """
 function unsafe_crc32(in::ReadableMemory, start::UInt32 = UInt32(0))::UInt32
     return @ccall gc_safe = true libdeflate.libdeflate_crc32(
@@ -501,6 +624,15 @@ end
     crc32(data, start=UInt32(0))::UInt32
 
 Calculate the CRC-32 checksum of `data` with seed `start`.
+
+# Examples:
+```jldoctest
+julia> crc32(b"hello world")
+0x0d4a1185
+
+julia> crc32(b" world", crc32(b"hello")) == crc32(b"hello world")
+true
+```
 """
 function crc32(data, start::UInt32 = UInt32(0))::UInt32
     return GC.@preserve data unsafe_crc32(ReadableMemory(data), start)
@@ -513,6 +645,14 @@ Calculate the Adler-32 checksum of the bytes in `in`,
 with seed `start` (default is 1).
 
 See also: [`adler32`](@ref)
+
+# Examples:
+```jldoctest
+julia> data = b"hello world";
+
+julia> GC.@preserve data unsafe_adler32(ReadableMemory(data))
+0x1a0b045d
+```
 """
 function unsafe_adler32(in::ReadableMemory, start::UInt32 = UInt32(1))::UInt32
     return @ccall gc_safe = true libdeflate.libdeflate_adler32(
@@ -524,6 +664,15 @@ end
     adler32(data, start=UInt32(1))::UInt32
 
 Calculate the Adler-32 checksum of `data` with seed `start`.
+
+# Examples:
+```jldoctest
+julia> adler32(b"hello world")
+0x1a0b045d
+
+julia> adler32(b" world", adler32(b"hello")) == adler32(b"hello world")
+true
+```
 """
 function adler32(data, start::UInt32 = UInt32(1))::UInt32
     return GC.@preserve data unsafe_adler32(ReadableMemory(data), start)
