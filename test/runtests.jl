@@ -29,3 +29,10 @@ end
 @testset "zlib" begin
     include("zlib.jl")
 end
+
+# These tests scan buffers larger than 4 GiB and are intentionally excluded from the
+# default suite. Run them with `LIBDEFLATE_TEST_LARGE_BUFFERS=true julia --project -e
+# 'using Pkg; Pkg.test()'` on a 64-bit system with sufficient address space.
+if get(ENV, "LIBDEFLATE_TEST_LARGE_BUFFERS", "false") == "true"
+    include("large_buffers.jl")
+end

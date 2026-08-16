@@ -12,7 +12,8 @@ libdeflate_jll = "1"
 
 [extras]
 CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "CodecZlib"]
+test = ["Test", "CodecZlib", "Mmap"]
