@@ -1,6 +1,20 @@
 using LibDeflate
 using Test
 using CodecZlib
+using Aqua
+
+# Persistent tasks is slow to test and we don't use tasks at all, so skip it
+@testset "Aqua" begin
+    Aqua.test_all(LibDeflate; persistent_tasks = false)
+end
+
+# This is not the actual commit this functionality was added but just some
+# aribitrary commit afterwards where is certainly is present
+if VERSION > v"1.14.0-DEV.2851"
+    @testset "Closure boxes" begin
+        @test isempty(Test.detect_closure_boxes(LibDeflate))
+    end
+end
 
 struct CustomReadable
     data::Vector{UInt8}
