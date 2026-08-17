@@ -8,10 +8,7 @@ uncompressing data using the DEFLATE algorithm, including gzip, or zlib formats.
 module LibDeflate
 
 using libdeflate_jll
-
-# Alias Base unions to avoid relying on internals
-const BitInteger = Union{Int128, Int16, Int32, Int64, Int8, UInt128, UInt16, UInt32, UInt64, UInt8}
-const IEEEFloat = Union{Float16, Float32, Float64}
+using MemoryViews: ImmutableMemoryView, MutableMemoryView, MemoryView
 
 """
     Module LibDeflateErrors
@@ -82,8 +79,8 @@ const DEFAULT_COMPRESSION_LEVEL = UInt8(6)
     WriteableMemory
 
 Struct that wraps a pointer and a length. This struct is not garbage-collector aware,
-so must be used with `GC.@preserve`. This can be constructed from types that are
-pointer-writeable, including contiguous dense arrays of integers and IEEE floats.
+so must be used with `GC.@preserve`. This can be constructed from types that can be
+represented as a mutable `MemoryView{UInt8}`.
 To make custom types available as output for `LibDeflate`, add a constructor taking
 the custom type.
 This type implements `pointer(::WriteableMemory)::Ptr{Nothing}` and
@@ -108,25 +105,23 @@ julia> GC.@preserve v begin
 struct WriteableMemory
     ptr::Ptr{Nothing}
     len::UInt
+
+    global function unsafe_writeable_memory(ptr::Ptr, len::UInt)
+        return new(Ptr{Nothing}(ptr), len)
+    end
+
+    function WriteableMemory(ptr::Ptr, len::Integer)
+        length = UInt(len)::UInt
+        if length > (typemax(Int) % UInt)
+            throw(DomainError(len, "WriteableMemory length cannot exceed typemax(Int)"))
+        end
+        return new(Ptr{Nothing}(ptr), length)
+    end
 end
 
-
-# We can only write to types where we know they are mutable, that
-# `pointer` and `sizeof` are correct (unlike e.g. subarrays with non-1-strides),
-# and where all bitpatterns are legal values.
-function WriteableMemory(x::DenseArray{T}) where {T <: Union{BitInteger, IEEEFloat}}
-    return WriteableMemory(pointer(x), sizeof(x) % UInt)
-end
-
-function WriteableMemory(
-        x::SubArray{T, N, P, I, true}
-    ) where {
-        T <: Union{BitInteger, IEEEFloat},
-        N,
-        P,
-        I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
-    }
-    return WriteableMemory(pointer(x), sizeof(x) % UInt)
+WriteableMemory(x) = _writeable_memory(MemoryView(x))
+function _writeable_memory(x::MutableMemoryView{UInt8})
+    return unsafe_writeable_memory(pointer(x), sizeof(x) % UInt)
 end
 WriteableMemory(x::WriteableMemory) = x
 
@@ -134,10 +129,9 @@ WriteableMemory(x::WriteableMemory) = x
     ReadableMemory
 
 Struct that wraps a pointer and a length. This struct is not garbage-collector aware,
-so must be used with `GC.@preserve`. This can be constructed from types that are
-pointer-readable, including strings and contiguous dense arrays of integers and IEEE
-floats. Arrays of arbitrary bitstypes are deliberately unsupported because their
-representations may contain padding.
+so must be used with `GC.@preserve`. This can be constructed from strings and types that
+can be represented as a `MemoryView{UInt8}`. Memory views with other element types are
+deliberately unsupported.
 To make custom types available as input for `LibDeflate`, add a constructor taking
 your custom type.
 
@@ -159,32 +153,34 @@ See also: [`WriteableMemory`](@ref)
 struct ReadableMemory
     ptr::Ptr{Nothing}
     len::UInt
+
+    global function unsafe_readable_memory(ptr::Ptr, len::UInt)
+        return new(Ptr{Nothing}(ptr), len)
+    end
+
+    function ReadableMemory(ptr::Ptr, len::Integer)
+        length = UInt(len)::UInt
+        if length > (typemax(Int) % UInt)
+            throw(DomainError(len, "ReadableMemory length cannot exceed typemax(Int)"))
+        end
+        return new(Ptr{Nothing}(ptr), length)
+    end
 end
 
-function ReadableMemory(x::DenseArray{T}) where {T <: Union{BitInteger, IEEEFloat}}
-    return ReadableMemory(pointer(x), sizeof(x) % UInt)
+ReadableMemory(x) = _readable_memory(ImmutableMemoryView(x))
+function _readable_memory(x::MemoryView{UInt8})
+    return unsafe_readable_memory(pointer(x), sizeof(x) % UInt)
 end
-
-function ReadableMemory(
-        x::SubArray{T, N, P, I, true}
-    ) where {
-        T <: Union{BitInteger, IEEEFloat},
-        N,
-        P,
-        I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
-    }
-    return ReadableMemory(pointer(x), sizeof(x) % UInt)
-end
-
-function ReadableMemory(x::Union{String, SubString{String}})
-    return ReadableMemory(pointer(x), sizeof(x) % UInt)
-end
-
-ReadableMemory(x::WriteableMemory) = ReadableMemory(pointer(x), x.len)
 ReadableMemory(x::ReadableMemory) = x
+ReadableMemory(x::WriteableMemory) = unsafe_readable_memory(x.ptr, x.len)
+function ReadableMemory(x::Union{String, SubString{String}})
+    return unsafe_readable_memory(pointer(x), ncodeunits(x) % UInt)
+end
 
 Base.pointer(x::Union{ReadableMemory, WriteableMemory})::Ptr{Nothing} = x.ptr
-Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = Int(x.len)
+
+# Note: In constructors, we enforce x.len fits in an Int, so this truncate cannot overflow
+Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = x.len % Int
 
 # Must be mutable for the GC to be able to interact with it
 """
@@ -192,10 +188,13 @@ Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = Int(x.len)
 
 Create an object which can decompress using the DEFLATE algorithm.
 The same decompressor cannot be used by multiple threads at the same time.
-To parallelize decompression, create multiple instances of `Decompressor`
-and use one for each thread.
+
 Creating this object allocates, so when decompressing multiple blocks, keep
 the same decompressor in memory rather than making one for each block.
+
+!!! warning
+    `Decompressor` is not thread-safe, and therefore should not be used by
+    different tasks concurrently. Concurrent use may cause undefined behaviour.
 
 See also: [`decompress!`](@ref), [`unsafe_decompress!`](@ref)
 
@@ -247,10 +246,13 @@ end
 
 Create an object which can compress using the DEFLATE algorithm. `compresslevel`
 can be from 1 (fast) to 12 (slow), and defaults to $(DEFAULT_COMPRESSION_LEVEL).
-The same compressor cannot be used by multiple threads at the same time.
-To parallelize compression, create multiple instances of `Compressor` and use one for each thread.
+
 Creating this object allocates, so when compressing multiple blocks, keep
 the same compressor in memory rather than making one for each block.
+
+!!! warning
+    `Compressor` is not thread-safe, and therefore should not be used by
+    different tasks concurrently. Concurrent use may cause undefined behaviour.
 
 See also: [`compress!`](@ref), [`unsafe_compress!`](@ref)
 

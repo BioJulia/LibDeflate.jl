@@ -19,11 +19,12 @@ end
 """
     GzipExtraField
 
-Data structure for gzip extra data. Fields:
+Data structure for gzip extra data. Public properties:
 
 * `tag::NTuple{2, UInt8}` two-byte tag
-* `data::Union{Nothing, UnitRange{UInt}}` location of subfield data in original vector,
-or `nothing` if empty.
+* `data::Union{Nothing, UnitRange{UInt}}` one-based location of subfield data in the
+  original input. It is `nothing` precisely when the length of the range would
+  otherwise be zero.
 
 # Examples:
 ```jldoctest
@@ -45,8 +46,21 @@ true
 ```
 """
 struct GzipExtraField
+    data_start::UInt # one-based
+    data_length::UInt16
     tag::Tuple{UInt8, UInt8} # (SI1, SI2)
-    data::Union{Nothing, UnitRange{UInt}}
+end
+
+@inline function Base.getproperty(field::GzipExtraField, name::Symbol)
+    name === :data || return getfield(field, name)
+    data_length = getfield(field, :data_length)
+    iszero(data_length) && return nothing
+    data_start = getfield(field, :data_start)
+    return data_start:(data_start + UInt(data_length) - one(UInt))
+end
+
+function Base.propertynames(::GzipExtraField, private::Bool = false)
+    return private ? (:data_start, :data_length, :tag, :data) : (:tag, :data)
 end
 
 # The pointer points to the first byte of the first field
@@ -62,11 +76,7 @@ function parse_fields!(
         field isa LibDeflateError && return field
         push!(fields, field)
 
-        # We zero the range field on an empty subfield, so we take
-        # that possibility into account
-        data = field.data
-        field_len = data === nothing ? UInt16(0) : length(data) % UInt16
-        total_len = field_len + UInt16(4)
+        total_len = field.data_length + UInt16(4)
         remaining_bytes -= total_len
         ptr += total_len
         index += total_len
@@ -90,13 +100,7 @@ function parse_extra_field(
     field_len = ltoh(unsafe_load(Ptr{UInt16}(ptr + 2)))
     field_len + 4 > remaining_bytes && return LibDeflateErrors.gzip_extra_too_long
 
-    # If the field is empty, we use a Nothing to convey that
-    range = if iszero(field_len)
-        nothing
-    else
-        (index + UInt(4)):(index + UInt(3) + UInt(field_len))
-    end
-    return GzipExtraField((s1, s2), range)
+    return GzipExtraField(index + UInt(4), field_len, (s1, s2))
 end
 
 """
@@ -159,10 +163,17 @@ end
     GzipHeader
 
 Struct representing a gzip header. It has the following fields:
-* `mtime::UInt32`: Modification time of file
-* `filename::Union{Nothing, UnitRange{UInt}}` index of filename in header
-* `comment::Union{Nothing, UnitRange{UInt}}` index of comment in header
-* `extra::Union{Nothing, Vector{GzipExtraField}}` Extra gzip fields, if applicable.
+* `mtime::UInt32`: modification time of the file. This field is never `nothing`; a
+  value of zero means that no modification time is available.
+* `filename::Union{Nothing, UnitRange{UInt}}`: index of the filename in the header.
+  `nothing` means that the `FNAME` flag is absent, while an empty range means that the
+  flag is present but the filename is empty.
+* `comment::Union{Nothing, UnitRange{UInt}}`: index of the comment in the header.
+  `nothing` means that the `FCOMMENT` flag is absent, while an empty range means that
+  the flag is present but the comment is empty.
+* `extra::Union{Nothing, ImmutableMemoryView{GzipExtraField}}`: gzip extra fields.
+  `nothing` means that the `FEXTRA` flag is absent, while an empty view means that the
+  flag is present with `XLEN == 0`.
 
 # Examples:
 ```jldoctest
@@ -177,10 +188,10 @@ julia> String(bytes[header.filename])
 ```
 """
 struct GzipHeader
-    mtime::UInt32
+    extra::Union{Nothing, ImmutableMemoryView{GzipExtraField}}
     filename::Union{Nothing, UnitRange{UInt}}
     comment::Union{Nothing, UnitRange{UInt}}
-    extra::Union{Nothing, Vector{GzipExtraField}}
+    mtime::UInt32
 end
 
 """
@@ -326,7 +337,8 @@ function unsafe_parse_gzip_header(
         index += UInt(2)
     end
 
-    return (; read = index - one(UInt), header = GzipHeader(mtime, filename, comment, extra))
+    extra_view = extra === nothing ? nothing : ImmutableMemoryView(extra)
+    return (; read = index - one(UInt), header = GzipHeader(extra_view, filename, comment, mtime))
 end
 
 """
@@ -729,10 +741,8 @@ function unsafe_gzip_decompress_all!(
             member_offset = read
             for index in eachindex(extra_data)
                 field = extra_data[index]
-                data = field.data
-                data === nothing && continue
                 extra_data[index] = GzipExtraField(
-                    field.tag, (first(data) + member_offset):(last(data) + member_offset)
+                    field.data_start + member_offset, field.data_length, field.tag
                 )
             end
         end
@@ -799,7 +809,8 @@ end
 """
     gzip_compress!(
         compressor::Compressor, output, input;
-        comment=nothing, filename=nothing, extra=nothing, header_crc=false
+        comment=nothing, filename=nothing, extra=nothing, mtime=UInt32(0),
+        header_crc=false
     )::Union{LibDeflateError, UInt}
 
 Compress `input` as gzip data into the fixed-size buffer `output`, returning the
@@ -809,6 +820,9 @@ The output is never resized.
 Use [`gzip_compress_bound`](@ref) to determine an output size that is guaranteed to
 be sufficient. Custom input, output, and metadata types can opt in by implementing
 `ReadableMemory` and `WriteableMemory`.
+
+`mtime` is the modification time in seconds since the Unix epoch. It defaults to zero,
+which indicates that no modification time is available.
 
 # Examples:
 ```jldoctest
@@ -832,6 +846,7 @@ function gzip_compress!(
         comment = nothing,
         filename = nothing,
         extra = nothing,
+        mtime::UInt32 = UInt32(0),
         header_crc::Bool = false,
     )::Union{LibDeflateError, UInt}
     return GC.@preserve output input comment filename extra begin
@@ -842,6 +857,7 @@ function gzip_compress!(
             comment === nothing ? nothing : ReadableMemory(comment),
             filename === nothing ? nothing : ReadableMemory(filename),
             extra === nothing ? nothing : ReadableMemory(extra),
+            mtime,
             header_crc,
         )
     end
@@ -854,18 +870,20 @@ function _gzip_compress!(
         comment::Union{Nothing, ReadableMemory},
         filename::Union{Nothing, ReadableMemory},
         extra::Union{Nothing, ReadableMemory},
+        mtime::UInt32,
         header_crc::Bool,
     )::Union{LibDeflateError, UInt}
     return unsafe_gzip_compress!(
         compressor, output, input;
-        comment, filename, extra, header_crc,
+        comment, filename, extra, mtime, header_crc,
     )
 end
 
 """
     unsafe_gzip_compress!(
         compressor::Compressor, out::WriteableMemory, in::ReadableMemory;
-        comment=nothing, filename=nothing, extra=nothing, header_crc=false
+        comment=nothing, filename=nothing, extra=nothing, mtime=UInt32(0),
+        header_crc=false
     )::Union{LibDeflateError, UInt}
 
 Use the `Compressor` to gzip compress input at `pointer(in)` and `sizeof(in)` bytes onwards
@@ -878,6 +896,9 @@ at their default of `nothing`.
 Adds optional data `comment`, `filename`, `extra`.
 * `comment` and `filename` must not include the byte `0x00`.
 * `extra` must be at most `typemax(UInt16)` bytes long.
+
+`mtime` is the modification time in seconds since the Unix epoch. It defaults to zero,
+which indicates that no modification time is available.
 
 Returns the number of bytes written to `pointer(out)`.
 
@@ -904,10 +925,11 @@ function unsafe_gzip_compress!(
         compressor::Compressor,
         out::WriteableMemory,
         in::ReadableMemory;
-        comment::Union{Nothing, ReadableMemory}=nothing,
-        filename::Union{Nothing, ReadableMemory}=nothing,
-        extra::Union{Nothing, ReadableMemory}=nothing,
-        header_crc::Bool=false,
+        comment::Union{Nothing, ReadableMemory} = nothing,
+        filename::Union{Nothing, ReadableMemory} = nothing,
+        extra::Union{Nothing, ReadableMemory} = nothing,
+        mtime::UInt32 = UInt32(0),
+        header_crc::Bool = false,
     )::Union{LibDeflateError, UInt}
     out_len = out.len
     extra_len = extra === nothing ? nothing : UInt16(extra.len)
@@ -943,8 +965,8 @@ function unsafe_gzip_compress!(
     ptr = Ptr{UInt8}(pointer(out)) - 1
     unsafe_store!(Ptr{UInt32}(ptr + 1), htol(header))
 
-    # Add system time (take lower 32 bits if it overflows)
-    unsafe_store!(Ptr{UInt32}(ptr + 5), htol(unsafe_trunc(UInt32, time())))
+    # Add modification time
+    unsafe_store!(Ptr{UInt32}(ptr + 5), htol(mtime))
 
     # Add system (unknown) and XFL (zero)
     unsafe_store!(Ptr{UInt16}(ptr + 9), htol(0x00ff))

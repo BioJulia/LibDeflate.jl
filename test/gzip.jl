@@ -70,6 +70,7 @@ function test_header_example(data::Vector{UInt8}, header::LibDeflate.GzipHeader)
     @test length(header.extra) == 2
     @test first(header.extra).tag == (0x42, 0x43)
     @test first(header.extra).data == UInt(17):UInt(18)
+    @test data[first(header.extra).data] == UInt8[0xa1, 0x4c]
     @test last(header.extra).tag == (0x02, 0x03)
     @test last(header.extra).data === nothing # empty field
     @test String(data[header.filename]) == "filename.fna"
@@ -81,7 +82,15 @@ end
     @test fieldtype(GzipHeader, :mtime) === UInt32
     @test fieldtype(GzipHeader, :filename) === Union{Nothing, UnitRange{UInt}}
     @test fieldtype(GzipHeader, :comment) === Union{Nothing, UnitRange{UInt}}
-    @test fieldtype(GzipExtraField, :data) === Union{Nothing, UnitRange{UInt}}
+    @test fieldtype(GzipHeader, :extra) ===
+        Union{Nothing, ImmutableMemoryView{GzipExtraField}}
+    @test fieldtype(GzipExtraField, :data_start) === UInt
+    @test fieldtype(GzipExtraField, :data_length) === UInt16
+    empty_field = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    @test propertynames(empty_field) == (:tag, :data)
+    @test hasproperty(empty_field, :data)
+    @test Sys.WORD_SIZE != 64 || sizeof(GzipExtraField) == 16
+    @test Sys.WORD_SIZE != 64 || sizeof(GzipHeader) == 56
 
     result = GC.@preserve header_data unsafe_parse_gzip_header(ReadableMemory(header_data))
     @test result.read == length(header_data)
@@ -123,7 +132,8 @@ end
     # Reusing extra-field storage must not retain fields from a previous header.
     extra_data = LibDeflate.GzipExtraField[]
     header = parse_gzip_header(header_data; extra_data).header
-    @test header.extra === extra_data
+    @test header.extra isa ImmutableMemoryView{GzipExtraField}
+    @test header.extra == extra_data
     @test !isempty(extra_data)
 
     header_without_extra = UInt8[
@@ -134,7 +144,7 @@ end
     @test isempty(extra_data)
 
     # Reused output is cleared before validation and therefore also on early errors.
-    sentinel = GzipExtraField((0x01, 0x01), nothing)
+    sentinel = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
     push!(extra_data, sentinel)
     @test parse_gzip_header(UInt8[]; extra_data) ==
         LibDeflateErrors.gzip_header_too_short
@@ -179,6 +189,7 @@ end
     result = parse_gzip_header(empty_extra)
     @test result.read == 12
     header = result.header
+    @test header.extra !== nothing
     @test isempty(header.extra)
 
     truncated_extra = vcat(extra_header, 0x04, 0x00, 0x42, 0x43, 0x00)
@@ -268,6 +279,16 @@ test_filename = "testfile.foo"
     @test n_bytes isa UInt
     @test transcode(GzipDecompressor, output.data[1:n_bytes]) == data
 
+    mtime_output = zeros(UInt8, gzip_compress_bound(compressor, UInt(sizeof(data))))
+    n_bytes = gzip_compress!(compressor, mtime_output, data)
+    @test parse_gzip_header(mtime_output[1:n_bytes]).header.mtime == UInt32(0)
+
+    explicit_mtime = UInt32(0x12345678)
+    n_bytes = GC.@preserve data mtime_output unsafe_gzip_compress!(
+        compressor, WriteableMemory(mtime_output), ReadableMemory(data); mtime = explicit_mtime
+    )
+    @test parse_gzip_header(mtime_output[1:n_bytes]).header.mtime == explicit_mtime
+
     base_bound = gzip_compress_bound(compressor, UInt(0))
     @test base_bound isa UInt
     @test gzip_compress_bound(compressor, UInt(0); comment_len = UInt(0)) ==
@@ -306,6 +327,7 @@ test_filename = "testfile.foo"
     @test_throws TypeError gzip_compress_bound(
         compressor, UInt(0); comment_len = 0
     )
+    @test_throws TypeError gzip_compress!(compressor, UInt8[], ""; mtime = 0)
 end
 
 
@@ -326,7 +348,7 @@ complex_test_case = vcat(
     decompressor = Decompressor()
     outdata = zeros(UInt8, 1001)
 
-    sentinel = GzipExtraField((0x01, 0x01), nothing)
+    sentinel = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
     extra_data = [sentinel]
     @test gzip_decompress!(decompressor, outdata, UInt8[]; extra_data) ==
         LibDeflateErrors.gzip_header_too_short
@@ -428,7 +450,7 @@ complex_test_case = vcat(
     )
     @test String(custom_output.data[1:result.written]) == "custom output"
 
-    extra_data = [GzipExtraField((0x01, 0x01), nothing)]
+    extra_data = [GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))]
     result = gzip_decompress!(decompressor, outdata, compressed; extra_data)
     @test result isa GzipDecompressResult
     @test isempty(extra_data)
@@ -476,7 +498,7 @@ end
     expected = Vector{UInt8}(join(parts))
     output = zeros(UInt8, length(expected) + 16)
 
-    sentinel = GzipExtraField((0x01, 0x01), nothing)
+    sentinel = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
     reused_extra = [sentinel]
     no_members = GzipDecompressAllResult(
         (;

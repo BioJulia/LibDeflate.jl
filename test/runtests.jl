@@ -2,6 +2,7 @@ using LibDeflate
 using Test
 using CodecZlib
 using Aqua
+using MemoryViews: ImmutableMemoryView, MemoryView, MutableMemoryView
 
 # Persistent tasks is slow to test and we don't use tasks at all, so skip it
 @testset "Aqua" begin
