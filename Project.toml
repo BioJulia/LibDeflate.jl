@@ -1,6 +1,6 @@
 name = "LibDeflate"
 uuid = "9255714d-24a7-4b30-8ea3-d46a97f7e13b"
-version = "0.5.0"
+version = "1.0.0"
 authors = ["Jakob Nybo Andersen <jnandersen@proton.me>"]
 
 [deps]
