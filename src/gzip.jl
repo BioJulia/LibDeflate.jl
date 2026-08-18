@@ -8,7 +8,7 @@ function bytes_until_zero(p::Ptr{UInt8}, lastindex::UInt)::Union{UInt, Nothing}
     return pos == C_NULL ? nothing : (pos - p) % UInt
 end
 
-"Check if there are any 0x00 bytes in a block of memory"
+# Check if there are any 0x00 bytes in a block of memory
 function any_zeros(mem::ReadableMemory)::Bool
     return bytes_until_zero(Ptr{UInt8}(pointer(mem)), mem.len) !== nothing
 end
@@ -22,9 +22,8 @@ end
 Data structure for gzip extra data. Public properties:
 
 * `tag::NTuple{2, UInt8}` two-byte tag
-* `data::Union{Nothing, UnitRange{UInt}}` one-based location of subfield data in the
-  original input. It is `nothing` precisely when the length of the range would
-  otherwise be zero.
+* `data::UnitRange{UInt}` one-based location of subfield data in the original input.
+  The range is empty when the subfield data has length zero.
 
 # Examples:
 ```jldoctest
@@ -54,7 +53,6 @@ end
 @inline function Base.getproperty(field::GzipExtraField, name::Symbol)
     name === :data || return getfield(field, name)
     data_length = getfield(field, :data_length)
-    iszero(data_length) && return nothing
     data_start = getfield(field, :data_start)
     return data_start:(data_start + UInt(data_length) - one(UInt))
 end
@@ -158,14 +156,15 @@ end
 
 Struct representing a gzip header. It has the following properties:
 * `mtime::Union{Nothing, NonZeroUInt32}`: modification time of the file, as expressed by
-  a UNIX timestamp mod 2^32. The value zero is not permitted by the gzip format.
-* `filename::Union{Nothing, UnitRange{Int}}`: index of the filename in the header.
+  a UNIX timestamp mod 2^32. The value zero is not permitted by the gzip format, and so
+  the value is stored in a [`NonZeroUInt32`](@ref).
+* `filename::Union{Nothing, UnitRange{UInt}}`: index of the filename in the header.
   `nothing` means that the `FNAME` flag is absent, while an empty range means that the
   flag is present but the filename is empty.
-* `comment::Union{Nothing, UnitRange{Int}}`: index of the comment in the header.
+* `comment::Union{Nothing, UnitRange{UInt}}`: index of the comment in the header.
   `nothing` means that the `FCOMMENT` flag is absent, while an empty range means that
   the flag is present but the comment is empty.
-* `extra::Union{Nothing, UnitRange{Int}}`: the indices of the gzip extra fields
+* `extra::Union{Nothing, UnitRange{UInt}}`: the indices of the gzip extra fields
   in the passed-in `Vector{GzipExtraField}` (or `GzipDecompressAllScratch`).
   `nothing` means that the `FEXTRA` flag is absent, while an empty range means that the
   flag is present with `XLEN == 0`.
@@ -195,18 +194,18 @@ end
 
 @inline function load_gzip_header_tuple(
         x::Tuple{UInt, UInt}
-    )::Union{Nothing, UnitRange{Int}}
-    return x === (UInt(0), UInt(0)) ? nothing : reinterpret(UnitRange{Int}, x)
+    )::Union{Nothing, UnitRange{UInt}}
+    return x === (UInt(0), UInt(0)) ? nothing : reinterpret(UnitRange{UInt}, x)
 end
 
-@inline function store_gzip_header_range(x::Union{Nothing, UnitRange{Int}})::Tuple{UInt, UInt}
+@inline function store_gzip_header_range(x::Union{Nothing, UnitRange{UInt}})::Tuple{UInt, UInt}
     return isnothing(x) ? (UInt(0), UInt(0)) : (UInt(first(x)), UInt(last(x)))
 end
 
 function GzipHeader(
-        extra::Union{Nothing, UnitRange{Int}},
-        filename::Union{Nothing, UnitRange{Int}},
-        comment::Union{Nothing, UnitRange{Int}},
+        extra::Union{Nothing, UnitRange{UInt}},
+        filename::Union{Nothing, UnitRange{UInt}},
+        comment::Union{Nothing, UnitRange{UInt}},
         mtime::Union{NonZeroUInt32, Nothing},
     )
     return GzipHeader(
@@ -318,7 +317,7 @@ end
 function _unsafe_parse_gzip_header(
         input::ReadableMemory, extra_fields::Vector{GzipExtraField}
     )::Union{LibDeflateError, @NamedTuple{read::UInt, header::GzipHeader}}
-    first_extra = length(extra_fields) + 1
+    first_extra = UInt(length(extra_fields)) + one(UInt)
 
     # header is at least 10 bytes
     max_len = input.len
@@ -355,7 +354,7 @@ function _unsafe_parse_gzip_header(
             extra_fields, ptr + index + 2, index + UInt(2), extra_len
         )
         fields_result isa LibDeflateError && return fields_result
-        extra = first_extra:length(extra_fields)
+        extra = first_extra:UInt(length(extra_fields))
         index += UInt(extra_len) + UInt(2)
     end
 
@@ -370,7 +369,7 @@ function _unsafe_parse_gzip_header(
         until_zero = bytes_until_zero(ptr + index, remaining)
         until_zero === nothing && return LibDeflateErrors.gzip_string_not_null_terminated
         zero_pos = index + until_zero
-        filename = Int(index):Int(zero_pos - one(UInt))
+        filename = index:(zero_pos - one(UInt))
         index = zero_pos + one(UInt)
     end
 
@@ -383,7 +382,7 @@ function _unsafe_parse_gzip_header(
         until_zero = bytes_until_zero(ptr + index, remaining)
         until_zero === nothing && return LibDeflateErrors.gzip_string_not_null_terminated
         zero_pos = index + until_zero
-        comment = Int(index):Int(zero_pos - one(UInt))
+        comment = index:(zero_pos - one(UInt))
         index = zero_pos + one(UInt)
     end
 
@@ -455,7 +454,7 @@ It has the following properties:
 
 When a `GzipDecompressAllScratch` is passed to a function, the function may
 overwrite or empty the scratch. After the function is done, the scratch contains
-exactly the `GzipExtraField`s and `GzipDecompressResult`s of the decompress gzip.
+exactly the `GzipExtraField`s and `GzipDecompressResult`s of the decompressed gzip file.
 """
 struct GzipDecompressAllScratch
     extra_fields::Vector{GzipExtraField}
@@ -474,7 +473,7 @@ a gzip file composed of multiple, concatenated gzip data.
 
 `GzipDecompressAllResult` is currently a `NamedTuple`, but may be changed to a named
 struct in a future release. The type name and properties are part of the public API; users
-should refer to the result type as `GzipDecompressAllResult`.
+should refer to this type as `GzipDecompressAllResult` instead of the `NamedTuple` subtype.
 
 It has the following properties:
 * `read::UInt`: total input bytes occupied by the completed members
@@ -917,18 +916,22 @@ end
 
 """
     gzip_compress_bound(
-        compressor::Compressor, input_size::UInt;
-        comment_len=nothing, filename_len=nothing, extra_len=nothing, header_crc=false
+        compressor::Compressor,
+        input_size::UInt;
+        comment_len::Union{Nothing, UInt} = nothing,
+        filename_len::Union{Nothing, UInt} = nothing,
+        extra_len::Union{Nothing, UInt16} = nothing,
+        header_crc::Bool = false,
     )::UInt
 
 Return a worst-case upper bound on the number of bytes produced by
 [`gzip_compress!`](@ref) with the given input and metadata sizes. A metadata length of
 `nothing` means that the corresponding optional field will not be present, while `0`
-represents a present but empty field. Pass `UInt(0)` or `UInt16(0)`, as appropriate.
+represents a present but empty field.
 
 The bound may overestimate the required space, but an output buffer of this size is
-guaranteed to be sufficient. This calculation does not inspect any input or metadata
-and is constant-time with respect to all supplied sizes.
+guaranteed to be sufficient. This calculation is constant-time with respect to
+all supplied sizes.
 
 # Examples:
 ```jldoctest
@@ -970,10 +973,10 @@ The output is never resized.
 
 Use [`gzip_compress_bound`](@ref) to determine an output size that is guaranteed to
 be sufficient. Custom input, output, and metadata types can opt in by implementing
-`ReadableMemory` and `WriteableMemory`.
+`WriteableMemory` (for output) and `ReadableMemory` (for every other argument).
 
-`mtime` is the modification time in seconds since the Unix epoch, or `nothing` if
-not available.
+`mtime` is the modification time in seconds since the Unix epoch represented by a
+[`NonZeroUInt32`](@ref), or `nothing` if not available.
 
 # Examples:
 ```jldoctest

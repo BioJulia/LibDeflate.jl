@@ -81,6 +81,10 @@ const DenseByteSubArray = SubArray{UInt8, N, <:DenseArray, I, true} where {
     N, I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
 }
 
+const MutableDenseByteSubArray = SubArray{UInt8, N, <:Union{Array, Memory}, I, true} where {
+    N, I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
+}
+
 """
     NonZeroUInt32
 
@@ -114,8 +118,8 @@ try_nonzero_uint32(x::UInt32) = iszero(x) ? nothing : unsafe_new_nonzerou32(x)
     WriteableMemory
 
 Struct that wraps a pointer and a length. This struct is not garbage-collector aware,
-so must be used with `GC.@preserve`. This type can be constructed from `DenseArray{UInt8}`,
-`String`, `SubString{String}` and some `SubArray`s. It may also be directly constructed
+so must be used with `GC.@preserve`. This type can be constructed from `Vector{UInt8}`,
+`Memory{UInt8}`, and some subtypes of `SubArray`. It may also be directly constructed
 from a `Ptr` and an `Integer`.
 To make custom types available as output for `LibDeflate`, add a constructor taking
 the custom type.
@@ -161,7 +165,7 @@ function WriteableMemory(x::Union{Array{UInt8}, Memory{UInt8}})
     return unsafe_writeable_memory(pointer(x), length(x) % UInt)
 end
 
-function WriteableMemory(x::DenseByteSubArray)
+function WriteableMemory(x::MutableDenseByteSubArray)
     return WriteableMemory(pointer(x), UInt(length(x)))
 end
 
@@ -210,6 +214,10 @@ end
 function ReadableMemory(x::Union{String, SubString{String}})
     return unsafe_readable_memory(pointer(x), ncodeunits(x) % UInt)
 end
+function ReadableMemory(x::Base.CodeUnits{UInt8, <:Union{String, SubString{String}}})
+    return unsafe_readable_memory(pointer(x), length(x) % UInt)
+end
+
 
 ReadableMemory(x::ReadableMemory) = x
 ReadableMemory(x::WriteableMemory) = unsafe_readable_memory(x.ptr, x.len)
@@ -218,7 +226,7 @@ function ReadableMemory(x::Union{Array{UInt8}, Memory{UInt8}})
     return unsafe_readable_memory(pointer(x), length(x) % UInt)
 end
 
-function ReadableMemory(x::DenseByteSubArray)
+function ReadableMemory(x::Union{DenseByteSubArray, DenseArray{UInt8}})
     return unsafe_readable_memory(pointer(x), UInt(length(x)))
 end
 
@@ -232,13 +240,12 @@ Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = x.len % Int
     Decompressor()
 
 Create an object which can decompress using the DEFLATE algorithm.
-The same decompressor cannot be used by multiple threads at the same time.
 
 Creating this object allocates, so when decompressing multiple blocks, keep
 the same decompressor in memory rather than making one for each block.
 
 !!! warning
-    `Decompressor` is not thread-safe, and therefore should not be used by
+    `Decompressor` is not thread safe, and therefore should not be used by
     different tasks concurrently. Concurrent use may cause undefined behaviour.
 
 See also: [`decompress!`](@ref), [`unsafe_decompress!`](@ref)
@@ -287,16 +294,16 @@ function free_decompressor(decompressor::Decompressor)
 end
 
 """
-    Compressor(compresslevel::UInt8=$(DEFAULT_COMPRESSION_LEVEL))
+    Compressor(compresslevel::UInt8=$(repr(DEFAULT_COMPRESSION_LEVEL)))
 
 Create an object which can compress using the DEFLATE algorithm. `compresslevel`
-can be from 1 (fast) to 12 (slow), and defaults to $(DEFAULT_COMPRESSION_LEVEL).
+can be from 1 (fast) to 12 (slow), and defaults to $(repr(DEFAULT_COMPRESSION_LEVEL)).
 
 Creating this object allocates, so when compressing multiple blocks, keep
 the same compressor in memory rather than making one for each block.
 
 !!! warning
-    `Compressor` is not thread-safe, and therefore should not be used by
+    `Compressor` is not thread safe, and therefore should not be used by
     different tasks concurrently. Concurrent use may cause undefined behaviour.
 
 See also: [`compress!`](@ref), [`unsafe_compress!`](@ref)
@@ -463,7 +470,9 @@ end
 
 Decompress a DEFLATE payload from the beginning of `input` and write decompressed
 data to the beginning of `output`. On success, return the number of bytes read and
-written. Reading stops at the end of the DEFLATE stream, so trailing input is left
+written.
+On error, return a `LibDeflateError`.
+Reading stops at the end of the DEFLATE stream, so trailing input is left
 unread.
 
 If the decompressed size is known, pass it as `n_out`. This is faster, but returns
@@ -553,10 +562,10 @@ end
 
 Return a worst-case upper bound on the number of bytes produced by
 [`compress!`](@ref) when compressing `input_size` bytes with `compressor`.
+This is generally slightly larger than `input_size`.
 
 The bound may overestimate the required space, but an output buffer of this size is
-guaranteed to be sufficient. This calculation does not inspect any input data and is
-constant-time with respect to `input_size`.
+guaranteed to be sufficient. This calculation is constant-time with respect to `input_size`.
 
 # Examples:
 ```jldoctest
@@ -645,10 +654,10 @@ function compress!(compressor::Compressor, output, input)::Union{LibDeflateError
 end
 
 """
-    unsafe_crc32(in::ReadableMemory, start::UInt32)::UInt32
+    unsafe_crc32(in::ReadableMemory, start::UInt32=UInt32(0))::UInt32
 
 Calculate the CRC-32 checksum of `in` with seed `start` (default is 0).
-Note that crc32 is a different and slower algorithm than the `crc32c` provided
+Note that CRC-32 is a different and slower algorithm than the `crc32c` provided
 in the Julia standard library.
 
 See also: [`crc32`](@ref)
@@ -668,9 +677,11 @@ function unsafe_crc32(in::ReadableMemory, start::UInt32 = UInt32(0))::UInt32
 end
 
 """
-    crc32(data, start=UInt32(0))::UInt32
+    crc32(data, start::UInt32=UInt32(0))::UInt32
 
 Calculate the CRC-32 checksum of `data` with seed `start`.
+Note that CRC-32 is a different and slower algorithm than the `crc32c` provided
+in the Julia standard library.
 
 # Examples:
 ```jldoctest

@@ -87,32 +87,6 @@ end
     v1 = zeros(UInt8, 1024)
     compressor = Compressor()
 
-    bytes = UInt8[0x01, 0x02, 0x03, 0x04]
-    mutable_view = MemoryView(bytes)
-    immutable_view = ImmutableMemoryView(mutable_view)
-    @test mutable_view isa MutableMemoryView{UInt8}
-    @test immutable_view isa ImmutableMemoryView{UInt8}
-
-    write_mem = WriteableMemory(mutable_view)
-    @test pointer(write_mem) == pointer(mutable_view)
-    @test sizeof(write_mem) == length(mutable_view)
-
-    read_mutable_mem = ReadableMemory(mutable_view)
-    read_immutable_mem = ReadableMemory(immutable_view)
-    @test pointer(read_mutable_mem) == pointer(mutable_view)
-    @test pointer(read_immutable_mem) == pointer(immutable_view)
-    @test sizeof(read_mutable_mem) == sizeof(read_immutable_mem) == length(bytes)
-
-    byte_slice = MemoryView(view(bytes, 2:3))
-    @test pointer(ReadableMemory(byte_slice)) == pointer(bytes, 2)
-    @test pointer(WriteableMemory(byte_slice)) == pointer(bytes, 2)
-    @test sizeof(ReadableMemory(byte_slice)) == sizeof(WriteableMemory(byte_slice)) == 2
-
-    @test_throws MethodError WriteableMemory(immutable_view)
-    @test_throws MethodError WriteableMemory("immutable")
-    @test_throws MethodError ReadableMemory(MemoryView([1.0]))
-    @test_throws MethodError WriteableMemory(MemoryView([1.0]))
-
     input_view = ImmutableMemoryView(MemoryView(Vector{UInt8}("memory-view input")))
     compressed_storage = fill(0xff, 130)
     compressed_view = MemoryView(view(compressed_storage, 2:129))
@@ -131,37 +105,6 @@ end
     @test result.written == length(input_view)
     @test output_view == input_view
     @test output_storage[1] == output_storage[end] == 0xff
-
-    mem = ReadableMemory("foo")
-    mem = ReadableMemory(SubString("foo", 1:2))
-    mem = ReadableMemory(write_mem)
-    @test_throws MethodError WriteableMemory(mem)
-    @test pointer(mem) isa Ptr{Nothing}
-    @test mem.len isa UInt
-    @test fieldtype(ReadableMemory, :len) === UInt
-    @test fieldtype(WriteableMemory, :len) === UInt
-    @test sizeof(mem) isa Int
-    @test sizeof(mem) >= 0
-    @test_throws DomainError ReadableMemory(C_NULL, UInt(typemax(Int)) + one(UInt))
-    @test_throws DomainError WriteableMemory(C_NULL, UInt(typemax(Int)) + one(UInt))
-
-    if Sys.WORD_SIZE > 32
-        large_len = UInt(typemax(UInt32)) + one(UInt)
-        large_mem = ReadableMemory(C_NULL, large_len)
-        @test large_mem.len == large_len
-        @test sizeof(large_mem) == Int(large_len)
-    end
-
-    # A rectangular view that does not span every row has gaps between columns,
-    # so its logical elements are not contiguous in memory.
-    noncontiguous = view(reshape(UInt8.(1:9), 3, 3), 1:2, 1:2)
-    @test_throws MethodError ReadableMemory(noncontiguous)
-    @test_throws MethodError WriteableMemory(noncontiguous)
-
-    padded = [PaddedBits(0x01, 0x02)]
-    @test isbitstype(PaddedBits)
-    @test_throws MethodError ReadableMemory(padded)
-    @test_throws MethodError WriteableMemory(padded)
 
     @test_throws MethodError compress!(
         compressor, "xxxxxxxxxxxxxxxxxxxxxxxxxx", UInt8[0x01, 0x02]

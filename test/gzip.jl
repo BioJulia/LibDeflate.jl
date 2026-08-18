@@ -77,7 +77,8 @@ function test_header_example(
     @test first(fields).data == UInt(17):UInt(18)
     @test data[first(fields).data] == UInt8[0xa1, 0x4c]
     @test last(fields).tag == (0x02, 0x03)
-    @test last(fields).data === nothing # empty field
+    @test last(fields).data == UInt(23):UInt(22) # empty field
+    @test isempty(data[last(fields).data])
     @test String(data[header.filename]) == "filename.fna"
     @test String(data[header.comment]) == "αβ学中文"
     return true
@@ -88,6 +89,9 @@ end
     @test fieldtype(GzipExtraField, :data_start) === UInt
     @test fieldtype(GzipExtraField, :data_length) === UInt16
     empty_field = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    @test empty_field.data isa UnitRange{UInt}
+    @test empty_field.data == UInt(1):UInt(0)
+    @test isempty(empty_field.data)
     @test propertynames(empty_field) == (:tag, :data)
     @test hasproperty(empty_field, :data)
     @test Sys.WORD_SIZE != 64 || sizeof(GzipExtraField) == 16
@@ -100,9 +104,9 @@ end
     @test result.read isa UInt
     header = result.header
     @test header.mtime isa NonZeroUInt32
-    @test header.extra isa UnitRange{Int}
-    @test header.filename isa UnitRange{Int}
-    @test header.comment isa UnitRange{Int}
+    @test header.extra isa UnitRange{UInt}
+    @test header.filename isa UnitRange{UInt}
+    @test header.comment isa UnitRange{UInt}
     @test propertynames(header) == (:extra, :filename, :comment, :mtime)
     @test first(extra_fields[header.extra]).data isa UnitRange{UInt}
     test_header_example(header_data, extra_fields, header)
@@ -137,8 +141,8 @@ end
 
     # Reusing extra-field storage must not retain fields from a previous header.
     header = parse_gzip_header(header_data, extra_fields).header
-    @test header.extra isa UnitRange{Int}
-    @test header.extra == 1:length(extra_fields)
+    @test header.extra isa UnitRange{UInt}
+    @test header.extra == UInt(1):UInt(length(extra_fields))
     @test !isempty(extra_fields)
 
     header_without_extra = UInt8[
