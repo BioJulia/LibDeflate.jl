@@ -150,14 +150,15 @@ function _zlib_decompress!(
 end
 
 """
-    zlib_compress_bound(compressor::Compressor, input_size::UInt)::UInt
+    zlib_compress_bound(compressor::Compressor, input_size::UInt)::Union{LibDeflateError, UInt}
 
 Return a worst-case upper bound on the number of bytes produced by
 [`zlib_compress!`](@ref) when compressing `input_size` bytes with `compressor`.
 
 The bound may overestimate the required space, but an output buffer of this size is
 guaranteed to be sufficient. This calculation does not inspect any input data and is
-constant-time with respect to `input_size`.
+constant-time with respect to `input_size`. Returns `LibDeflateErrors.overflow` if the
+bound cannot be represented as a `UInt`.
 
 # Examples:
 ```jldoctest
@@ -167,8 +168,13 @@ julia> bound >= 1000
 true
 ```
 """
-function zlib_compress_bound(compressor::Compressor, input_size::UInt)::UInt
-    return deflate_compress_bound(compressor, input_size) + UInt(6)
+function zlib_compress_bound(
+        compressor::Compressor, input_size::UInt
+    )::Union{LibDeflateError, UInt}
+    deflate_bound = deflate_compress_bound(compressor, input_size)
+    deflate_bound isa LibDeflateError && return deflate_bound
+    bound, overflowed = Base.Checked.add_with_overflow(deflate_bound, UInt(6))
+    return overflowed ? LibDeflateErrors.overflow : bound
 end
 
 """

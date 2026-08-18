@@ -11,6 +11,7 @@ Dummy module to contain the variants of the `LibDeflateError` enum.
 module LibDeflateErrors
 
     @enum LibDeflateError::UInt8 begin
+        overflow
         deflate_bad_payload
         deflate_output_too_short
         deflate_insufficient_space
@@ -533,7 +534,7 @@ function _unsafe_decompress!(
 end
 
 """
-    deflate_compress_bound(compressor::Compressor, input_size::UInt)::UInt
+    deflate_compress_bound(compressor::Compressor, input_size::UInt)::Union{LibDeflateError, UInt}
 
 Return a worst-case upper bound on the number of bytes produced by
 [`compress!`](@ref) when compressing `input_size` bytes with `compressor`.
@@ -541,6 +542,7 @@ This is generally slightly larger than `input_size`.
 
 The bound may overestimate the required space, but an output buffer of this size is
 guaranteed to be sufficient. This calculation is constant-time with respect to `input_size`.
+Returns `LibDeflateErrors.overflow` if the bound cannot be represented as a `UInt`.
 
 # Examples:
 ```jldoctest
@@ -550,12 +552,15 @@ julia> bound >= 1000
 true
 ```
 """
-function deflate_compress_bound(compressor::Compressor, input_size::UInt)::UInt
-    return GC.@preserve compressor begin
+function deflate_compress_bound(
+        compressor::Compressor, input_size::UInt
+    )::Union{LibDeflateError, UInt}
+    bound = GC.@preserve compressor begin
         @ccall gc_safe = true libdeflate.libdeflate_deflate_compress_bound(
             compressor::Ptr{Cvoid}, input_size::Csize_t
         )::Csize_t
     end
+    return bound < input_size ? LibDeflateErrors.overflow : bound
 end
 
 """

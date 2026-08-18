@@ -235,6 +235,8 @@ end
         load_gzip_header_tuple(getfield(header, :comment))
     elseif sym === :mtime
         return try_nonzero_uint32(getfield(header, :mtime))
+    else
+        return getfield(header, sym)
     end
 end
 
@@ -853,12 +855,27 @@ function gzip_wrapper_size(
         filename_len::Union{Nothing, UInt},
         extra_len::Union{Nothing, UInt16},
         header_crc::Bool,
-    )::UInt
+    )::Union{LibDeflateError, UInt}
     size = UInt(18)
-    comment_len === nothing || (size += comment_len + one(UInt))
-    filename_len === nothing || (size += filename_len + one(UInt))
-    extra_len === nothing || (size += UInt(extra_len) + UInt(2))
-    size += ifelse(header_crc, UInt(2), zero(UInt))
+    if comment_len !== nothing
+        size, overflowed = Base.Checked.add_with_overflow(size, comment_len)
+        (overflowed || size > typemax(UInt) - one(UInt)) && return LibDeflateErrors.overflow
+        size += one(UInt)
+    end
+    if filename_len !== nothing
+        size, overflowed = Base.Checked.add_with_overflow(size, filename_len)
+        (overflowed || size > typemax(UInt) - one(UInt)) && return LibDeflateErrors.overflow
+        size += one(UInt)
+    end
+    if extra_len !== nothing
+        size, overflowed = Base.Checked.add_with_overflow(size, UInt(extra_len))
+        (overflowed || size > typemax(UInt) - UInt(2)) && return LibDeflateErrors.overflow
+        size += UInt(2)
+    end
+    size, overflowed = Base.Checked.add_with_overflow(
+        size, ifelse(header_crc, UInt(2), zero(UInt))
+    )
+    overflowed && return LibDeflateErrors.overflow
     return size
 end
 
@@ -898,9 +915,13 @@ function gzip_compress_bound(
         filename_len::Union{Nothing, UInt} = nothing,
         extra_len::Union{Nothing, UInt16} = nothing,
         header_crc::Bool = false,
-    )::UInt
+    )::Union{LibDeflateError, UInt}
     wrapper_size = gzip_wrapper_size(comment_len, filename_len, extra_len, header_crc)
-    return deflate_compress_bound(compressor, input_size) + wrapper_size
+    wrapper_size isa LibDeflateError && return wrapper_size
+    deflate_bound = deflate_compress_bound(compressor, input_size)
+    deflate_bound isa LibDeflateError && return deflate_bound
+    bound, overflowed = Base.Checked.add_with_overflow(deflate_bound, wrapper_size)
+    return overflowed ? LibDeflateErrors.overflow : bound
 end
 
 """

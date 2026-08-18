@@ -73,6 +73,7 @@ end
 
     input = CustomReadable(Vector{UInt8}("custom bound input"))
     compressor = Compressor()
+    @test deflate_compress_bound(compressor, typemax(UInt)) == LibDeflateErrors.overflow
     bound = deflate_compress_bound(compressor, UInt(sizeof(input.data)))
     @test compress!(compressor, zeros(UInt8, bound), input) isa UInt
     @test_throws MethodError deflate_compress_bound(compressor, 1)

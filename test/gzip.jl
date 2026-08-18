@@ -108,6 +108,7 @@ end
     @test header.filename isa UnitRange{UInt}
     @test header.comment isa UnitRange{UInt}
     @test propertynames(header) == (:extra, :filename, :comment, :mtime)
+    @test_throws FieldError header.not_a_property
     @test first(extra_fields[header.extra]).data isa UnitRange{UInt}
     test_header_example(header_data, extra_fields, header)
 
@@ -320,6 +321,9 @@ test_filename = "testfile.foo"
         base_bound + UInt(2)
     @test gzip_compress_bound(compressor, UInt(0); header_crc = true) ==
         base_bound + UInt(2)
+    @test gzip_compress_bound(compressor, UInt(0); comment_len = typemax(UInt)) ==
+        LibDeflateErrors.overflow
+    @test gzip_compress_bound(compressor, typemax(UInt)) == LibDeflateErrors.overflow
     for (bound_options, compress_options) in (
             ((; comment_len = UInt(0)), (; comment = "")),
             ((; filename_len = UInt(0)), (; filename = "")),

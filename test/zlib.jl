@@ -81,6 +81,7 @@ end
     bound = zlib_compress_bound(compressor, UInt(sizeof("foo")))
     @test bound == deflate_compress_bound(compressor, UInt(sizeof("foo"))) + UInt(6)
     @test bound isa UInt
+    @test zlib_compress_bound(compressor, typemax(UInt)) == LibDeflateErrors.overflow
     @test zlib_compress!(compressor, zeros(UInt8, bound), "foo") isa UInt
     @test zlib_compress!(compressor, output, "foo") == length(first(zlib_test_data))
     @test output[1:length(first(zlib_test_data))] == first(zlib_test_data)
