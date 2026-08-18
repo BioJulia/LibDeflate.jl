@@ -85,10 +85,11 @@ end
     @test zlib_compress!(compressor, output, "foo") == length(first(zlib_test_data))
     @test output[1:length(first(zlib_test_data))] == first(zlib_test_data)
 
-    @test zlib_compress!(compressor, zeros(Float64, 4), "foo") == length(first(zlib_test_data))
-    @test zlib_compress!(compressor, zeros(Int8, 0), "foo") ==
+    @test zlib_compress!(compressor, zeros(UInt8, 32), "foo") ==
+        length(first(zlib_test_data))
+    @test zlib_compress!(compressor, zeros(UInt8, 0), "foo") ==
         LibDeflateErrors.zlib_insufficient_space
-    @test zlib_compress!(compressor, zeros(Float64, 1), "foo") ==
+    @test zlib_compress!(compressor, zeros(UInt8, 8), "foo") ==
         LibDeflateErrors.deflate_insufficient_space
 
     input = CustomReadable(Vector{UInt8}("custom bound input"))

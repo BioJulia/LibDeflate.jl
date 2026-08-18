@@ -7,8 +7,8 @@ uncompressing data using the DEFLATE algorithm, including gzip, or zlib formats.
 """
 module LibDeflate
 
+using Base: FastContiguousSubArray
 using libdeflate_jll
-using MemoryViews: ImmutableMemoryView, MutableMemoryView, MemoryView
 
 """
     Module LibDeflateErrors
@@ -75,12 +75,48 @@ using .LibDeflateErrors
 
 const DEFAULT_COMPRESSION_LEVEL = UInt8(6)
 
+# This is derived from the internal Base.FastContiguousSubArray, which is supposed to
+# represent SubArrays that are contiguous.
+const DenseByteSubArray = SubArray{UInt8, N, <:DenseArray, I, true} where {
+    N, I <: Union{Tuple{Vararg{Real}}, Tuple{AbstractUnitRange, Vararg{Any}}},
+}
+
+"""
+    NonZeroUInt32
+
+Container that stores an `UInt32` value, which cannot be zero.
+Obtain the inner value with the `.x` property:
+
+# Examples
+```jldoctest
+julia> x = NonZeroUInt32(UInt32(3)); x.x
+0x00000003
+
+julia> NonZeroUInt32(UInt32(0))
+ERROR: ArgumentError: Cannot construct a NonZeroUInt32 from zero
+[...]
+```
+"""
+struct NonZeroUInt32
+    x::UInt32
+
+    global unsafe_new_nonzerou32(x::UInt32) = new(x)
+
+    function NonZeroUInt32(x::UInt32)
+        iszero(x) && throw(ArgumentError("Cannot construct a NonZeroUInt32 from zero"))
+        return new(x)
+    end
+end
+
+try_nonzero_uint32(x::UInt32) = iszero(x) ? nothing : unsafe_new_nonzerou32(x)
+
 """
     WriteableMemory
 
 Struct that wraps a pointer and a length. This struct is not garbage-collector aware,
-so must be used with `GC.@preserve`. This can be constructed from types that can be
-represented as a mutable `MemoryView{UInt8}`.
+so must be used with `GC.@preserve`. This type can be constructed from `DenseArray{UInt8}`,
+`String`, `SubString{String}` and some `SubArray`s. It may also be directly constructed
+from a `Ptr` and an `Integer`.
 To make custom types available as output for `LibDeflate`, add a constructor taking
 the custom type.
 This type implements `pointer(::WriteableMemory)::Ptr{Nothing}` and
@@ -119,19 +155,23 @@ struct WriteableMemory
     end
 end
 
-WriteableMemory(x) = _writeable_memory(MemoryView(x))
-function _writeable_memory(x::MutableMemoryView{UInt8})
-    return unsafe_writeable_memory(pointer(x), sizeof(x) % UInt)
-end
 WriteableMemory(x::WriteableMemory) = x
+
+function WriteableMemory(x::Union{Array{UInt8}, Memory{UInt8}})
+    return unsafe_writeable_memory(pointer(x), length(x) % UInt)
+end
+
+function WriteableMemory(x::DenseByteSubArray)
+    return WriteableMemory(pointer(x), UInt(length(x)))
+end
 
 """
     ReadableMemory
 
 Struct that wraps a pointer and a length. This struct is not garbage-collector aware,
-so must be used with `GC.@preserve`. This can be constructed from strings and types that
-can be represented as a `MemoryView{UInt8}`. Memory views with other element types are
-deliberately unsupported.
+so must be used with `GC.@preserve`. This type can be constructed from `DenseArray{UInt8}`,
+`String`, `SubString{String}` and some `SubArray`s. It may also be directly constructed
+from a `Ptr` and an `Integer`.
 To make custom types available as input for `LibDeflate`, add a constructor taking
 your custom type.
 
@@ -167,14 +207,19 @@ struct ReadableMemory
     end
 end
 
-ReadableMemory(x) = _readable_memory(ImmutableMemoryView(x))
-function _readable_memory(x::MemoryView{UInt8})
-    return unsafe_readable_memory(pointer(x), sizeof(x) % UInt)
-end
-ReadableMemory(x::ReadableMemory) = x
-ReadableMemory(x::WriteableMemory) = unsafe_readable_memory(x.ptr, x.len)
 function ReadableMemory(x::Union{String, SubString{String}})
     return unsafe_readable_memory(pointer(x), ncodeunits(x) % UInt)
+end
+
+ReadableMemory(x::ReadableMemory) = x
+ReadableMemory(x::WriteableMemory) = unsafe_readable_memory(x.ptr, x.len)
+
+function ReadableMemory(x::Union{Array{UInt8}, Memory{UInt8}})
+    return unsafe_readable_memory(pointer(x), length(x) % UInt)
+end
+
+function ReadableMemory(x::DenseByteSubArray)
+    return unsafe_readable_memory(pointer(x), UInt(length(x)))
 end
 
 Base.pointer(x::Union{ReadableMemory, WriteableMemory})::Ptr{Nothing} = x.ptr
@@ -690,7 +735,9 @@ export Decompressor,
     GzipHeader,
     GzipExtraField,
     GzipDecompressResult,
+    GzipDecompressAllScratch,
     GzipDecompressAllResult,
+    NonZeroUInt32,
     WriteableMemory,
     ReadableMemory,
     unsafe_decompress!,
