@@ -10,30 +10,15 @@
         [n_out::UInt]
     )::Union{LibDeflateError, UInt}
 
-Decompress a zlib stream from `input` into `output`. Without `n_out`,
-`sizeof(output)` is the available capacity. If the exact decompressed size is known,
-pass it as `n_out` to use the faster known-size path. Return the number of bytes written
-or an error. The referenced memory must remain valid for the duration of the call.
+Low-level variant of [`zlib_decompress!`](@ref) that operates directly on
+`WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
+value, and errors as `zlib_decompress!`.
 
-# Examples:
-```jldoctest
-julia> compressed = vcat(
-           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
-           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
-       ); # zlib "Hello, world!"
+The caller must keep the allocations referenced by `output` and `input` alive, typically
+by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
+The memory regions referenced by `output` and `input` must not overlap (alias).
 
-julia> out = zeros(UInt8, 13);
-
-julia> w = GC.@preserve compressed out begin
-           unsafe_zlib_decompress!(decompressor, WriteableMemory(out), ReadableMemory(compressed))
-       end;
-
-julia> w === UInt(13)
-true
-
-julia> String(out)
-"Hello, world!"
-```
+See also: [`zlib_decompress!`](@ref)
 """
 function unsafe_zlib_decompress!(
         decompressor::Decompressor,
@@ -105,8 +90,16 @@ end
     )::Union{LibDeflateError, UInt}
 
 Decompress `input` as a zlib stream into `output`. If the exact decompressed size is
-known, pass it as `n_out` for the faster known-size path. Return the number of bytes
-written or an error.
+known, pass it as `n_out` to use the faster known-size path. Return the number of bytes
+written or a `LibDeflateError`.
+
+`ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
+preserving both arguments from garbage collection for the duration of the call. Custom
+input and output types can opt in by implementing those constructors. This function does
+not check whether the input and output memory regions overlap (alias); the caller must
+ensure that they do not.
+
+See also: [`unsafe_zlib_decompress!`](@ref)
 
 # Examples:
 ```jldoctest
@@ -182,7 +175,15 @@ end
     zlib_compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
 Compress `input` as a zlib stream into `output`, returning the number of bytes written
-or an error.
+or a `LibDeflateError` if the output is too small. The output is never resized.
+
+`ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
+preserving both arguments from garbage collection for the duration of the call. Custom
+input and output types can opt in by implementing those constructors. This function does
+not check whether the input and output memory regions overlap (alias); the caller must
+ensure that they do not.
+
+See also: [`unsafe_zlib_compress!`](@ref)
 
 # Examples:
 ```jldoctest
@@ -212,25 +213,15 @@ end
         ::Compressor, output::WriteableMemory, input::ReadableMemory
     )::Union{LibDeflateError, UInt}
 
-Compress `input` as a zlib stream into `output`, returning the number of bytes written
-or an error.
+Low-level variant of [`zlib_compress!`](@ref) that operates directly on
+`WriteableMemory` and `ReadableMemory`. It has the same compression behavior, return
+value, and errors as `zlib_compress!`.
 
-# Examples:
-```jldoctest
-julia> data = b"Hello, world!";
+The caller must keep the allocations referenced by `output` and `input` alive, typically
+by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
+The memory regions referenced by `output` and `input` must not overlap (alias).
 
-julia> out = zeros(UInt8, zlib_compress_bound(compressor, UInt(sizeof(data))));
-
-julia> n = GC.@preserve data out begin
-           unsafe_zlib_compress!(compressor, WriteableMemory(out), ReadableMemory(data))
-       end;
-
-julia> out[1:n] == vcat(
-           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
-           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
-       )
-true
-```
+See also: [`zlib_compress!`](@ref)
 """
 function unsafe_zlib_compress!(
         compressor::Compressor, output::WriteableMemory, input::ReadableMemory

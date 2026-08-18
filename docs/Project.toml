@@ -1,6 +1,7 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 LibDeflate = "9255714d-24a7-4b30-8ea3-d46a97f7e13b"
+MemoryViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
 
 [sources]
 LibDeflate = {path = ".."}

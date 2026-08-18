@@ -1,10 +1,3 @@
-"""
-    Module LibDeflate
-
-`LibDeflate` provides Julia bindings for the C library `libdeflate`. The C library,
-and the corresponding Julia package, contain highly optimized code for compressing and
-uncompressing data using the DEFLATE algorithm, including gzip, or zlib formats.
-"""
 module LibDeflate
 
 using Base: FastContiguousSubArray
@@ -411,38 +404,15 @@ end
         [n_out::UInt]
     )::Union{@NamedTuple{read::UInt, written::UInt}, LibDeflateError}
 
-Decompress a DEFLATE stream, reading up to `sizeof(input)` compressed bytes and
-writing into `output`. Reading stops at the end of the DEFLATE stream, even if fewer
-than `sizeof(input)` bytes have been read.
+Low-level variant of [`decompress!`](@ref) that operates directly on
+`WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
+values, and errors as `decompress!`.
 
-Without `n_out`, `sizeof(output)` is the available capacity and the function returns
-`LibDeflate.deflate_insufficient_space` if the decompressed data does not fit. If the
-exact decompressed size is known, pass it as `n_out` to use the faster known-size path.
-An incorrect size returns `LibDeflate.deflate_output_too_short` or
-`LibDeflate.deflate_insufficient_space`.
-
-On success, return the number of bytes read from `input` and written to `output`.
-The referenced memory must remain valid for the duration of the call.
+The caller must keep the allocations referenced by `output` and `input` alive, typically
+by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
+The memory regions referenced by `output` and `input` must not overlap (alias).
 
 See also: [`decompress!`](@ref)
-
-# Examples:
-```jldoctest
-julia> compressed =
-       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21";
-
-julia> out = zeros(UInt8, 13);
-
-julia> result = GC.@preserve compressed out begin
-           unsafe_decompress!(decompressor, WriteableMemory(out), ReadableMemory(compressed))
-       end;
-
-julia> result.written === UInt(13)
-true
-
-julia> String(out)
-"Hello, world!"
-```
 """
 function unsafe_decompress!(
         decompressor::Decompressor,
@@ -468,18 +438,23 @@ end
         ::Decompressor, output, input, [n_out::UInt]
     )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
 
-Decompress a DEFLATE payload from the beginning of `input` and write decompressed
-data to the beginning of `output`. On success, return the number of bytes read and
-written.
-On error, return a `LibDeflateError`.
-Reading stops at the end of the DEFLATE stream, so trailing input is left
-unread.
+Decompress a DEFLATE stream, reading from the beginning of `input` and writing
+decompressed data to the beginning of `output`. Reading stops at the end of the
+DEFLATE stream, so trailing input is left unread. On success, return the number of
+bytes read and written; on error, return a `LibDeflateError`.
 
-If the decompressed size is known, pass it as `n_out`. This is faster, but returns
-an error if the size is incorrect.
+The function returns `LibDeflate.deflate_insufficient_space` if the decompressed data
+does not fit. If the exact decompressed size is known, pass it as `n_out` to use the
+faster known-size path. An incorrect size returns `LibDeflate.deflate_output_too_short` or
+`LibDeflate.deflate_insufficient_space`.
 
-Custom input and output types can opt in by implementing `ReadableMemory(input)`
-and `WriteableMemory(output)`, respectively.
+`ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
+preserving both arguments from garbage collection for the duration of the call. Custom
+input and output types can opt in by implementing those constructors. This function does
+not check whether the input and output memory regions overlap (alias); the caller must
+ensure that they do not.
+
+See also: [`unsafe_decompress!`](@ref)
 
 # Examples:
 ```jldoctest
@@ -588,26 +563,15 @@ end
         ::Compressor, out::WriteableMemory, in::ReadableMemory
     )::Union{UInt, LibDeflateError}
 
-Use the passed `Compressor` to compress the bytes in `in` into `out`.
+Low-level variant of [`compress!`](@ref) that operates directly on `WriteableMemory`
+and `ReadableMemory`. It has the same compression behavior, return value, and errors as
+`compress!`.
 
-Return the number of written bytes to the output, or a `LibDeflateError`.
+The caller must keep the allocations referenced by `out` and `in` alive, typically by
+wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
+The memory regions referenced by `out` and `in` must not overlap (alias).
 
 See also: [`compress!`](@ref)
-
-# Examples:
-```jldoctest
-julia> data = b"Hello, world!";
-
-julia> out = zeros(UInt8, deflate_compress_bound(compressor, UInt(sizeof(data))));
-
-julia> n = GC.@preserve data out begin
-           unsafe_compress!(compressor, WriteableMemory(out), ReadableMemory(data))
-       end;
-
-julia> out[1:n] ==
-       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21"
-true
-```
 """
 function unsafe_compress!(
         compressor::Compressor, out::WriteableMemory, in::ReadableMemory
@@ -629,10 +593,16 @@ end
     compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
 Compress `input` as a DEFLATE payload into the beginning of `output`, returning
-the number of bytes written or a `LibDeflateError`.
+the number of bytes written or `LibDeflate.deflate_insufficient_space` if the output is
+too small. The output is never resized.
 
-Custom input and output types can opt in by implementing `ReadableMemory(input)`
-and `WriteableMemory(output)`, respectively.
+`ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
+preserving both arguments from garbage collection for the duration of the call. Custom
+input and output types can opt in by implementing those constructors. This function does
+not check whether the input and output memory regions overlap (alias); the caller must
+ensure that they do not.
+
+See also: [`unsafe_compress!`](@ref)
 
 # Examples:
 ```jldoctest
@@ -656,19 +626,12 @@ end
 """
     unsafe_crc32(in::ReadableMemory, start::UInt32=UInt32(0))::UInt32
 
-Calculate the CRC-32 checksum of `in` with seed `start` (default is 0).
-Note that CRC-32 is a different and slower algorithm than the `crc32c` provided
-in the Julia standard library.
+Low-level variant of [`crc32`](@ref) that operates directly on `ReadableMemory` and has
+the same checksum behavior. The caller must keep the allocation referenced by `in`
+alive, typically by wrapping both construction of the memory wrapper and this call in
+`GC.@preserve`.
 
 See also: [`crc32`](@ref)
-
-# Examples:
-```jldoctest
-julia> data = b"hello world";
-
-julia> GC.@preserve data unsafe_crc32(ReadableMemory(data))
-0x0d4a1185
-```
 """
 function unsafe_crc32(in::ReadableMemory, start::UInt32 = UInt32(0))::UInt32
     return @ccall gc_safe = true libdeflate.libdeflate_crc32(
@@ -682,6 +645,12 @@ end
 Calculate the CRC-32 checksum of `data` with seed `start`.
 Note that CRC-32 is a different and slower algorithm than the `crc32c` provided
 in the Julia standard library.
+
+`ReadableMemory(data)` is constructed safely by preserving `data` from garbage
+collection for the duration of the call. Custom input types can opt in by implementing
+that constructor.
+
+See also: [`unsafe_crc32`](@ref)
 
 # Examples:
 ```jldoctest
@@ -699,18 +668,12 @@ end
 """
     unsafe_adler32(in::ReadableMemory, start=UInt32(1))::UInt32
 
-Calculate the Adler-32 checksum of the bytes in `in`,
-with seed `start` (default is 1).
+Low-level variant of [`adler32`](@ref) that operates directly on `ReadableMemory` and
+has the same checksum behavior. The caller must keep the allocation referenced by `in`
+alive, typically by wrapping both construction of the memory wrapper and this call in
+`GC.@preserve`.
 
 See also: [`adler32`](@ref)
-
-# Examples:
-```jldoctest
-julia> data = b"hello world";
-
-julia> GC.@preserve data unsafe_adler32(ReadableMemory(data))
-0x1a0b045d
-```
 """
 function unsafe_adler32(in::ReadableMemory, start::UInt32 = UInt32(1))::UInt32
     return @ccall gc_safe = true libdeflate.libdeflate_adler32(
@@ -722,6 +685,12 @@ end
     adler32(data, start=UInt32(1))::UInt32
 
 Calculate the Adler-32 checksum of `data` with seed `start`.
+
+`ReadableMemory(data)` is constructed safely by preserving `data` from garbage
+collection for the duration of the call. Custom input types can opt in by implementing
+that constructor.
+
+See also: [`unsafe_adler32`](@ref)
 
 # Examples:
 ```jldoctest

@@ -98,20 +98,12 @@ end
 """
     unsafe_is_valid_extra_data(data::ReadableMemory)::Bool
 
-Check whether `data` represents valid gzip metadata for the "extra" field.
-Gzip extra data cannot exceed `typemax(UInt16)` bytes.
-
-The memory referenced by `data` must remain valid for the duration of the call.
+Low-level variant of [`is_valid_extra_data`](@ref) that operates directly on
+`ReadableMemory` and has the same validation behavior. The caller must keep the
+allocation referenced by `data` alive, typically by wrapping both construction of
+the memory wrapper and this call in `GC.@preserve`.
 
 See also: [`is_valid_extra_data`](@ref)
-
-# Examples:
-```jldoctest
-julia> data = b"\\x41\\x42\\x02\\0\\x01\\x02"; # tag, 2-byte length, 2 bytes data
-
-julia> GC.@preserve data unsafe_is_valid_extra_data(ReadableMemory(data))
-true
-```
 """
 function unsafe_is_valid_extra_data(data::ReadableMemory)::Bool
     data.len > typemax(UInt16) && return false
@@ -134,7 +126,11 @@ end
     is_valid_extra_data(data)::Bool
 
 Check whether `data` represents valid gzip metadata for the "extra" field.
-Custom input types can opt in by implementing `ReadableMemory(data)`.
+Gzip extra data cannot exceed `typemax(UInt16)` bytes.
+
+`ReadableMemory(data)` is constructed safely by preserving `data` from garbage
+collection for the duration of the call. Custom input types can opt in by implementing
+that constructor.
 
 See also: [`unsafe_is_valid_extra_data`](@ref)
 
@@ -260,6 +256,12 @@ The parser empties `extra_fields` before validation, then appends every parsed g
 extra field to it. The returned header's `extra` range contains the indices of those
 fields in `extra_fields`.
 
+`ReadableMemory(input)` is constructed safely by preserving `input` from garbage
+collection for the duration of the call. Custom input types can opt in by implementing
+that constructor.
+
+See also: [`unsafe_parse_gzip_header`](@ref)
+
 # Examples:
 ```jldoctest
 julia> header_bytes = b"\\x1f\\x8b\\x08\\x08\\0\\0\\0\\0\\0\\xff";
@@ -289,22 +291,14 @@ end
         input::ReadableMemory, extra_fields::Vector{GzipExtraField}
     )
 
-Parse the input data, returning the number of bytes read and a `GzipHeader`, or a
-`LibDeflateError`.
-The parser will not read more than `sizeof(input)` bytes. It empties `extra_fields`
-before validation and appends every parsed gzip extra field to it.
+Low-level variant of [`parse_gzip_header`](@ref) that operates directly on
+`ReadableMemory`. It has the same parsing behavior, return value, and errors as
+`parse_gzip_header`.
 
-# Examples:
-```jldoctest
-julia> header_bytes = b"\\x1f\\x8b\\x08\\x08\\0\\0\\0\\0\\0\\xff";
+The caller must keep the allocation referenced by `input` alive, typically by wrapping
+both construction of the memory wrapper and this call in `GC.@preserve`.
 
-julia> bytes = vcat(header_bytes, b"hi", b"\\0"); # gzip header, filename "hi"
-
-julia> fields = GzipExtraField[];
-
-julia> GC.@preserve bytes unsafe_parse_gzip_header(ReadableMemory(bytes), fields).read === UInt(13)
-true
-```
+See also: [`parse_gzip_header`](@ref)
 """
 function unsafe_parse_gzip_header(
         input::ReadableMemory, extra_fields::Vector{GzipExtraField}
@@ -528,12 +522,19 @@ known-size decompression path. An incorrect size returns
 
 On success, the returned result reports both the decompressed length and the total
 number of input bytes consumed by that member. Following gzip members or trailing data
-are left unread. Custom input and output types can opt in by implementing
-`ReadableMemory(input)` and `WriteableMemory(output)`, respectively.
+are left unread.
 
 The function empties `extra_fields` before validation and appends the member's parsed
 extra fields to it. The returned header's `extra` range contains the indices of those
 fields in `extra_fields`.
+
+`ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
+preserving both arguments from garbage collection for the duration of the call. Custom
+input and output types can opt in by implementing those constructors. This function does
+not check whether the input and output memory regions overlap (alias); the caller must
+ensure that they do not.
+
+See also: [`unsafe_gzip_decompress!`](@ref)
 
 # Examples:
 ```jldoctest
@@ -598,42 +599,15 @@ end
         extra_fields::Vector{GzipExtraField}
     )::Union{LibDeflateError, GzipDecompressResult}
 
-Use the `Decompressor` to decompress the first gzip member in `input` into `output`.
-Without `n_out`, `sizeof(output)` is the available capacity. If the exact decompressed
-size is known, pass it as `n_out` to use the faster known-size path. Return an error if
-the output size is insufficient or incorrect.
+Low-level variant of [`gzip_decompress!`](@ref) that operates directly on
+`WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
+value, and errors as `gzip_decompress!`.
 
-Empty `extra_fields` before validation and append the parsed extra fields to it.
-Only the first gzip member is decompressed; any following members or trailing
-data are left unread.
-
-Return a `GzipDecompressResult` on success.
+The caller must keep the allocations referenced by `output` and `input` alive, typically
+by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
+The memory regions referenced by `output` and `input` must not overlap (alias).
 
 See also: [`gzip_decompress!`](@ref)
-
-# Examples:
-```jldoctest
-julia> compressed = vcat(
-           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c",
-           b"\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\xe6\\xc6\\xe6\\xeb\\x0d\\0\\0\\0",
-       ); # gzip "Hello, world!"
-
-julia> out = zeros(UInt8, 13);
-
-julia> fields = GzipExtraField[];
-
-julia> result = GC.@preserve compressed out begin
-           unsafe_gzip_decompress!(
-               decompressor, WriteableMemory(out), ReadableMemory(compressed), fields
-           )
-       end;
-
-julia> result.written === UInt(13)
-true
-
-julia> String(out)
-"Hello, world!"
-```
 """
 function unsafe_gzip_decompress!(
         decompressor::Decompressor,
@@ -728,8 +702,12 @@ members completed before the error, followed by the `LibDeflateError`.
 Empty both vectors in `scratch` before validation. On return, `scratch.extra_fields`
 contains fields from every completed member and `scratch.member_results` contains one
 result per completed member. A failing member contributes to neither vector.
-Custom input and output types can opt in by implementing `ReadableMemory(input)`
-and `WriteableMemory(output)`, respectively.
+
+`ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
+preserving both arguments from garbage collection for the duration of the call. Custom
+input and output types can opt in by implementing those constructors. This function does
+not check whether the input and output memory regions overlap (alias); the caller must
+ensure that they do not.
 
 See also: [`gzip_decompress!`](@ref), [`unsafe_gzip_decompress_all!`](@ref)
 
@@ -785,45 +763,15 @@ end
         Tuple{GzipDecompressAllResult, LibDeflateError},
     }
 
-Unsafe variant of [`gzip_decompress_all!`](@ref). Decompress every member of a gzip file
-in `input` into `output`. The input must contain at least one complete member and no
-trailing data.
+Low-level variant of [`gzip_decompress_all!`](@ref) that operates directly on
+`WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
+value, errors, and effects on `scratch` as `gzip_decompress_all!`.
 
-On success, return `GzipDecompressAllResult` with statistics of the decompression result.
-If an error is encountered, return a tuple containing the same statistics for all
-members completed before the error, followed by the `LibDeflateError`.
+The caller must keep the allocations referenced by `output` and `input` alive, typically
+by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
+The memory regions referenced by `output` and `input` must not overlap (alias).
 
-Empty both vectors in `scratch` before validation. On return, `scratch.extra_fields`
-contains fields from every completed member and `scratch.member_results` contains one
-result per completed member. A failing member contributes to neither vector.
-
-See also: [`gzip_decompress_all!`](@ref).
-
-# Examples:
-```jldoctest
-julia> combined = vcat(
-           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
-           b"\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x82\\x89\\xd1\\xf7\\x05\\0\\0\\0",
-           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x05\\0\\xfa",
-           b"\\xff\\x57\\x6f\\x72\\x6c\\x64\\x47\\x3e\\xb6\\xfb\\x05\\0\\0\\0",
-       ); # gzip "Hello", then gzip "World"
-
-julia> out = zeros(UInt8, 10);
-
-julia> scratch = GzipDecompressAllScratch();
-
-julia> result = GC.@preserve combined out begin
-           w = WriteableMemory(out)
-           r = ReadableMemory(combined)
-           unsafe_gzip_decompress_all!(decompressor, w, r, scratch)
-       end;
-
-julia> result.members === UInt(2)
-true
-
-julia> String(out)
-"HelloWorld"
-```
+See also: [`gzip_decompress_all!`](@ref)
 """
 function unsafe_gzip_decompress_all!(
         decompressor::Decompressor,
@@ -972,11 +920,23 @@ number of bytes written or `LibDeflate.deflate_insufficient_space` if it does no
 The output is never resized.
 
 Use [`gzip_compress_bound`](@ref) to determine an output size that is guaranteed to
-be sufficient. Custom input, output, and metadata types can opt in by implementing
-`WriteableMemory` (for output) and `ReadableMemory` (for every other argument).
+be sufficient.
+
+Optional `comment`, `filename`, and `extra` metadata are omitted when set to `nothing`.
+`comment` and `filename` must not contain a zero byte. `extra` must represent valid gzip
+extra data and must not exceed `typemax(UInt16)` bytes.
 
 `mtime` is the modification time in seconds since the Unix epoch represented by a
 [`NonZeroUInt32`](@ref), or `nothing` if not available.
+
+`WriteableMemory(output)` and `ReadableMemory` wrappers for `input` and every
+non-`nothing` metadata argument are constructed safely by preserving those arguments
+from garbage collection for the duration of the call. Custom input, output, and metadata
+types can opt in by implementing the corresponding constructors. This function does not
+check whether the output memory region overlaps (aliases) the input or a metadata region;
+the caller must ensure that it does not.
+
+See also: [`unsafe_gzip_compress!`](@ref)
 
 # Examples:
 ```jldoctest
@@ -1045,40 +1005,16 @@ end
         header_crc::Bool=false,
     )::Union{LibDeflateError, UInt}
 
-Use the `Compressor` to gzip compress input at `pointer(in)` and `sizeof(in)` bytes onwards
-to, `pointer(out)`.
-If the resulting gzip data does not fit in `sizeof(out)`, return
-`LibDeflate.deflate_insufficient_space`.
-Optionally, include gzip comment, filename or extra data. All these are omitted if left
-at their default of `nothing`.
+Low-level variant of [`gzip_compress!`](@ref) that operates directly on
+`WriteableMemory` and `ReadableMemory`. It has the same compression behavior, metadata
+rules, return value, and errors as `gzip_compress!`.
 
-Adds optional data `comment`, `filename`, `extra`.
-* `comment` and `filename` must not include the byte `0x00`.
-* `extra` must be at most `typemax(UInt16)` bytes long.
-
-`mtime` is the modification time in seconds since the Unix epoch, or `nothing`
-if not available.
-
-Returns the number of bytes written to `pointer(out)`.
+The caller must keep the allocations referenced by `out`, `in`, and every non-`nothing`
+metadata argument alive, typically by wrapping both construction of the memory wrappers
+and this call in `GC.@preserve`. The memory region referenced by `out` must not overlap
+the regions referenced by `in` or any metadata argument.
 
 See also: [`gzip_compress!`](@ref)
-
-# Examples:
-```jldoctest
-julia> data = b"Hello, world!";
-
-julia> out = zeros(UInt8, gzip_compress_bound(compressor, UInt(sizeof(data))));
-
-julia> n = GC.@preserve data out begin
-           unsafe_gzip_compress!(compressor, WriteableMemory(out), ReadableMemory(data))
-       end;
-
-julia> out[1:3] == b"\\x1f\\x8b\\x08" # gzip magic bytes and DEFLATE method
-true
-
-julia> out[(n - 3):n] == b"\\x0d\\0\\0\\0" # ISIZE trailer: length of "Hello, world!"
-true
-```
 """
 function unsafe_gzip_compress!(
         compressor::Compressor,

@@ -8,5 +8,7 @@ DocTestSetup = quote
 end
 ```
 
-# LibDeflate
-Your documentation here
+# LibDeflate.jl
+LibDeflate.jl provides bindings to
+
+It uses the C library [libdeflate](https://github.com/ebiggers/libdeflate) for the computationally demanding parts.
