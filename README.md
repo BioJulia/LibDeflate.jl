@@ -1,4 +1,4 @@
-# LibDeflate.jl
+# <img src="./assets/sticker.svg" width="30%" align="right" /> LibDeflate
 
 ![CI](https://github.com/BioJulia/LibDeflate.jl/workflows/CI/badge.svg)
 [![Codecov](https://codecov.io/gh/jakobnissen/LibDeflate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/BioJulia/LibDeflate.jl)
@@ -35,3 +35,9 @@ result = decompress!(decompressor, roundtrip, view(out, 1:n_written))
 
 @assert String(view(roundtrip, 1:result.written)) == data
 ```
+
+## Questions?
+If you have a question about contributing or using BioJulia software, come
+on over and chat to us on [the Julia Slack workspace](https://julialang.org/slack/), or you can try the
+[Bio category of the Julia discourse site](https://discourse.julialang.org/c/domain/bio).
+

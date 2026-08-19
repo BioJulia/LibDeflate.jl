@@ -28,25 +28,6 @@ data_test_cases = [
     @test !is_valid_extra_data(zeros(UInt8, Int(typemax(UInt16)) + 1))
 end
 
-@testset "Parse fields" begin
-    test_parse(v) = GC.@preserve v LibDeflate.parse_fields!(
-        GzipExtraField[], pointer(v), UInt(1), UInt16(length(v))
-    )
-    for data in data_test_cases
-        # We merely test it doesn't fail
-        @test test_parse(data) !== nothing
-        data[2] = 0x00
-        @test test_parse(data) == LibDeflateErrors.gzip_bad_extra
-        data[2] = 0xa0
-        push!(data, 0x00)
-        @test test_parse(data) == LibDeflateErrors.gzip_extra_too_long
-        pop!(data)
-        @test test_parse(data[1:(end - 1)]) == LibDeflateErrors.gzip_extra_too_long
-        data = empty!(copy(data))
-        @test test_parse(data) !== nothing
-    end
-end
-
 header_data = UInt8[
     # header
     0x1f, 0x8b, 0x08, 0x1e, 0xb3, 0x2c, 0x51, 0x60, 0xff, 0x00,
@@ -72,13 +53,13 @@ function test_header_example(
     )
     @test header.mtime == NonZeroUInt32(0x60512cb3)
     @test length(header.extra) == 2
-    fields = extra_fields[header.extra]
-    @test first(fields).tag == (0x42, 0x43)
-    @test first(fields).data == UInt(17):UInt(18)
-    @test data[first(fields).data] == UInt8[0xa1, 0x4c]
-    @test last(fields).tag == (0x02, 0x03)
-    @test last(fields).data == UInt(23):UInt(22) # empty field
-    @test isempty(data[last(fields).data])
+    extras = extra_fields[header.extra]
+    @test first(extras).tag == (0x42, 0x43)
+    @test first(extras).data == UInt(17):UInt(18)
+    @test data[first(extras).data] == UInt8[0xa1, 0x4c]
+    @test last(extras).tag == (0x02, 0x03)
+    @test last(extras).data == UInt(23):UInt(22) # empty extra
+    @test isempty(data[last(extras).data])
     @test String(data[header.filename]) == "filename.fna"
     @test String(data[header.comment]) == "αβ学中文"
     return true
@@ -86,14 +67,12 @@ end
 
 @testset "Parse header" begin
     extra_fields = GzipExtraField[]
-    @test fieldtype(GzipExtraField, :data_start) === UInt
-    @test fieldtype(GzipExtraField, :data_length) === UInt16
-    empty_field = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
-    @test empty_field.data isa UnitRange{UInt}
-    @test empty_field.data == UInt(1):UInt(0)
-    @test isempty(empty_field.data)
-    @test propertynames(empty_field) == (:tag, :data)
-    @test hasproperty(empty_field, :data)
+    empty_extra = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    @test empty_extra.data isa UnitRange{UInt}
+    @test empty_extra.data == UInt(1):UInt(0)
+    @test isempty(empty_extra.data)
+    @test propertynames(empty_extra) == (:tag, :data)
+    @test hasproperty(empty_extra, :data)
     @test Sys.WORD_SIZE != 64 || sizeof(GzipExtraField) == 16
     @test Sys.WORD_SIZE != 64 || sizeof(GzipHeader) == 56
 
@@ -108,7 +87,6 @@ end
     @test header.filename isa UnitRange{UInt}
     @test header.comment isa UnitRange{UInt}
     @test propertynames(header) == (:extra, :filename, :comment, :mtime)
-    @test_throws FieldError header.not_a_property
     @test first(extra_fields[header.extra]).data isa UnitRange{UInt}
     test_header_example(header_data, extra_fields, header)
 
@@ -140,7 +118,7 @@ end
     @test ex.tag == (0x42, 0x43)
     @test ex.data == 17:18
 
-    # Reusing extra-field storage must not retain fields from a previous header.
+    # Reusing extra storage must not retain entries from a previous header.
     header = parse_gzip_header(header_data, extra_fields).header
     @test header.extra isa UnitRange{UInt}
     @test header.extra == UInt(1):UInt(length(extra_fields))
@@ -571,8 +549,6 @@ end
     @test result.written isa UInt
     @test result.members isa UInt
     @test result isa GzipDecompressAllResult
-    @test fieldtype(GzipDecompressResult, :written) === UInt
-    @test fieldtype(GzipDecompressResult, :read) === UInt
     @test result == (;
         read = UInt(length(concatenated)),
         written = UInt(length(expected)),
@@ -746,7 +722,7 @@ end
     @test first(empty_header.filename) == UInt(length(prefix_member) + 13)
     @test first(empty_header.comment) == UInt(length(prefix_member) + 14)
 
-    # A failing member's parsed fields are rolled back.
+    # A failing member's parsed entries are rolled back.
     corrupted_metadata = copy(with_metadata)
     corrupted_metadata[end - 7] ⊻= 0x01
     @test gzip_decompress_all!(

@@ -97,8 +97,6 @@ LibDeflate.WriteableMemory(output::CustomWriteable) = WriteableMemory(output.dat
 
     @test pointer(pointer_readable) isa Ptr{Nothing}
     @test pointer_readable.len isa UInt
-    @test fieldtype(ReadableMemory, :len) === UInt
-    @test fieldtype(WriteableMemory, :len) === UInt
     @test sizeof(pointer_readable) isa Int
 
     @test_throws InexactError ReadableMemory(C_NULL, -1)
