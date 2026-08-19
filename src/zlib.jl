@@ -199,10 +199,13 @@ julia> out = zeros(UInt8, zlib_compress_bound(compressor, UInt(sizeof(data))));
 
 julia> n = zlib_compress!(compressor, out, data);
 
-julia> out[1:n] == vcat(
-           b"\\x78\\x5e\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f",
-           b"\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\x20\\x5e\\x04\\x8a",
-       )
+julia> roundtrip = zeros(UInt8, sizeof(data));
+
+julia> zlib_decompress!(
+           decompressor, roundtrip, view(out, 1:n), UInt(sizeof(data)),
+       );
+
+julia> roundtrip == data
 true
 ```
 """

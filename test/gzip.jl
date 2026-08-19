@@ -13,9 +13,10 @@ data_test_cases = [
     for data in data_test_cases
         @test test_valid(data)
         @test test_unsafe_valid(data)
+        # Subfield IDs with SI2 == 0 are reserved, but remain structurally valid.
         data[2] = 0x00
-        @test !test_valid(data)
-        @test !test_unsafe_valid(data)
+        @test test_valid(data)
+        @test test_unsafe_valid(data)
         data[2] = 0xff
         push!(data, 0x00)
         @test !test_valid(data)
@@ -46,6 +47,17 @@ header_data = UInt8[
     0x78, 0x18,
 ]
 
+function make_empty_extra_field()
+    input = UInt8[
+        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+        0x04, 0x00, 0x01, 0x01, 0x00, 0x00,
+    ]
+    fields = GzipExtraField[]
+    result = parse_gzip_header(input, fields)
+    result isa LibDeflateError && error("failed to parse empty gzip extra field")
+    return only(fields)
+end
+
 function test_header_example(
         data::Vector{UInt8},
         extra_fields::Vector{GzipExtraField},
@@ -67,9 +79,9 @@ end
 
 @testset "Parse header" begin
     extra_fields = GzipExtraField[]
-    empty_extra = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    empty_extra = make_empty_extra_field()
     @test empty_extra.data isa UnitRange{UInt}
-    @test empty_extra.data == UInt(1):UInt(0)
+    @test empty_extra.data == UInt(17):UInt(16)
     @test isempty(empty_extra.data)
     @test propertynames(empty_extra) == (:tag, :data)
     @test hasproperty(empty_extra, :data)
@@ -132,7 +144,7 @@ end
     @test isempty(extra_fields)
 
     # Reused output is cleared before validation and therefore also on early errors.
-    sentinel = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    sentinel = make_empty_extra_field()
     push!(extra_fields, sentinel)
     @test parse_gzip_header(UInt8[], extra_fields) ==
         LibDeflateErrors.gzip_header_too_short
@@ -351,7 +363,7 @@ complex_test_case = vcat(
     decompressor = Decompressor()
     outdata = zeros(UInt8, 1001)
 
-    sentinel = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    sentinel = make_empty_extra_field()
     extra_fields = [sentinel]
     @test gzip_decompress!(decompressor, outdata, UInt8[], extra_fields) ==
         LibDeflateErrors.gzip_header_too_short
@@ -460,7 +472,7 @@ complex_test_case = vcat(
     )
     @test String(custom_output.data[1:result.written]) == "custom output"
 
-    extra_fields = [GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))]
+    extra_fields = [make_empty_extra_field()]
     result = gzip_decompress!(decompressor, outdata, compressed, extra_fields)
     @test result isa GzipDecompressResult
     @test isempty(extra_fields)
@@ -510,7 +522,7 @@ end
     expected = Vector{UInt8}(join(parts))
     output = zeros(UInt8, length(expected) + 16)
 
-    sentinel = GzipExtraField(UInt(1), UInt16(0), (0x01, 0x01))
+    sentinel = make_empty_extra_field()
     scratch = GzipDecompressAllScratch(
         [sentinel],
         GzipDecompressResult[

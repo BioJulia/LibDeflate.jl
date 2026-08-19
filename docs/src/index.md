@@ -32,7 +32,7 @@ To use custom types with the safe functions, you must implement constructors for
 See the reference in the sidebar for the full API. For an overview, this package implements:
 
 * Single-member gzip de/compression
-* Multi-member gzip de/compression
+* Multi-member gzip decompression
 * DEFLATE de/compression
 * zlib de/compression
 * Functions for obtaining an upper bound on the number of bytes written when compressing a given number of bytes

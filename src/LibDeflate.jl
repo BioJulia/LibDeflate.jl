@@ -237,6 +237,7 @@ Create an object which can decompress using the DEFLATE algorithm.
 
 Creating this object allocates, so when decompressing multiple blocks, keep
 the same decompressor in memory rather than making one for each block.
+If the C library fails to allocate this object, an `OutOfMemory` error is thrown.
 
 !!! warning
     `Decompressor` is not thread safe, and therefore should not be used by
@@ -266,6 +267,8 @@ mutable struct Decompressor
 
     function Decompressor()
         ptr = @ccall gc_safe = true libdeflate.libdeflate_alloc_decompressor()::Ptr{Cvoid}
+        # The C library returns a null pointer on failure to allocate
+        ptr == C_NULL && throw(OutOfMemoryError())
         decompressor = new(
             ptr,
             zero(UInt),
@@ -295,6 +298,7 @@ can be from 1 (fast) to 12 (slow), and defaults to $(repr(DEFAULT_COMPRESSION_LE
 
 Creating this object allocates, so when compressing multiple blocks, keep
 the same compressor in memory rather than making one for each block.
+If the C library fails to allocate this object, an `OutOfMemory` error is thrown.
 
 !!! warning
     `Compressor` is not thread safe, and therefore should not be used by
@@ -312,8 +316,11 @@ julia> out = zeros(UInt8, deflate_compress_bound(compressor, UInt(sizeof(data)))
 
 julia> n = compress!(compressor, out, data);
 
-julia> out[1:n] ==
-       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21"
+julia> roundtrip = zeros(UInt8, sizeof(data));
+
+julia> decompress!(Decompressor(), roundtrip, view(out, 1:n), UInt(sizeof(data)));
+
+julia> roundtrip == data
 true
 ```
 """
@@ -327,6 +334,8 @@ mutable struct Compressor
         ptr = @ccall gc_safe = true libdeflate.libdeflate_alloc_compressor(
             (compresslevel % Cint)::Cint
         )::Ptr{Cvoid}
+        # The C library returns a null pointer on failure to allocate
+        ptr == C_NULL && throw(OutOfMemoryError())
         compressor = new(ptr, compresslevel)
         finalizer(free_compressor, compressor)
         return compressor
@@ -444,10 +453,11 @@ decompressed data to the beginning of `output`. Reading stops at the end of the
 DEFLATE stream, so trailing input is left unread. On success, return the number of
 bytes read and written; on error, return a `LibDeflateError`.
 
-The function returns `LibDeflate.deflate_insufficient_space` if the decompressed data
+The function returns `LibDeflateErrors.deflate_insufficient_space` if the decompressed data
 does not fit. If the exact decompressed size is known, pass it as `n_out` to use the
-faster known-size path. An incorrect size returns `LibDeflate.deflate_output_too_short` or
-`LibDeflate.deflate_insufficient_space`.
+faster known-size path. An incorrect size returns
+`LibDeflateErrors.deflate_output_too_short` or
+`LibDeflateErrors.deflate_insufficient_space`.
 
 `ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
 preserving both arguments from garbage collection for the duration of the call. Custom
@@ -598,8 +608,8 @@ end
     compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
 Compress `input` as a DEFLATE payload into the beginning of `output`, returning
-the number of bytes written or `LibDeflate.deflate_insufficient_space` if the output is
-too small. The output is never resized.
+the number of bytes written or `LibDeflateErrors.deflate_insufficient_space` if the
+output is too small. The output is never resized.
 
 `ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
 preserving both arguments from garbage collection for the duration of the call. Custom
@@ -617,8 +627,11 @@ julia> out = zeros(UInt8, deflate_compress_bound(compressor, UInt(sizeof(data)))
 
 julia> n = compress!(compressor, out, data);
 
-julia> out[1:n] ==
-       b"\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21"
+julia> roundtrip = zeros(UInt8, sizeof(data));
+
+julia> decompress!(decompressor, roundtrip, view(out, 1:n), UInt(sizeof(data)));
+
+julia> roundtrip == data
 true
 ```
 """
@@ -671,7 +684,7 @@ function crc32(data, start::UInt32 = UInt32(0))::UInt32
 end
 
 """
-    unsafe_adler32(in::ReadableMemory, start=UInt32(1))::UInt32
+    unsafe_adler32(in::ReadableMemory, start::UInt32=UInt32(1))::UInt32
 
 Low-level variant of [`adler32`](@ref) that operates directly on `ReadableMemory` and
 has the same checksum behavior. The caller must keep the allocation referenced by `in`
@@ -687,7 +700,7 @@ function unsafe_adler32(in::ReadableMemory, start::UInt32 = UInt32(1))::UInt32
 end
 
 """
-    adler32(data, start=UInt32(1))::UInt32
+    adler32(data, start::UInt32=UInt32(1))::UInt32
 
 Calculate the Adler-32 checksum of `data` with seed `start`.
 

@@ -83,11 +83,14 @@ end
     @test bound isa UInt
     @test zlib_compress_bound(compressor, typemax(UInt)) == LibDeflateErrors.overflow
     @test zlib_compress!(compressor, zeros(UInt8, bound), "foo") isa UInt
-    @test zlib_compress!(compressor, output, "foo") == length(first(zlib_test_data))
-    @test output[1:length(first(zlib_test_data))] == first(zlib_test_data)
+    n_compressed = zlib_compress!(compressor, output, "foo")
+    @test n_compressed isa UInt
+    @test transcode(ZlibDecompressor, output[1:n_compressed]) == Vector{UInt8}("foo")
 
-    @test zlib_compress!(compressor, zeros(UInt8, 32), "foo") ==
-        length(first(zlib_test_data))
+    output_32 = zeros(UInt8, 32)
+    n_compressed = zlib_compress!(compressor, output_32, "foo")
+    @test n_compressed isa UInt
+    @test transcode(ZlibDecompressor, output_32[1:n_compressed]) == Vector{UInt8}("foo")
     @test zlib_compress!(compressor, zeros(UInt8, 0), "foo") ==
         LibDeflateErrors.zlib_insufficient_space
     @test zlib_compress!(compressor, zeros(UInt8, 8), "foo") ==
