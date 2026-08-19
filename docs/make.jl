@@ -26,7 +26,7 @@ makedocs(
 )
 
 deploydocs(;
-    repo = "github.com/jakobnissen/LibDeflate.jl.git",
+    repo = "github.com/BioJulia/LibDeflate.jl.git",
     push_preview = true,
     deps = nothing,
     make = nothing,
