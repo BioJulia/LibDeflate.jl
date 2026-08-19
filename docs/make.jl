@@ -14,6 +14,7 @@ DocMeta.setdocmeta!(LibDeflate, :DocTestSetup, meta; recursive = true)
 
 makedocs(
     modules = [LibDeflate, LibDeflate.LibDeflateErrors],
+    repo = Documenter.Remotes.GitHub("BioJulia", "LibDeflate.jl"),
     sitename = "LibDeflate.jl",
     doctest = true,
     pages = [
@@ -22,7 +23,6 @@ makedocs(
     ],
     authors = "Jakob Nybo Andersen",
     checkdocs = :public,
-    remotes = nothing
 )
 
 deploydocs(;
