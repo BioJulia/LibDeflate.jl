@@ -102,8 +102,8 @@ end
 
     for (compresslevel, header) in [
             (UInt8(1), 0x0178),
-            (UInt8(4), 0x9c78),
-            (LibDeflate.DEFAULT_COMPRESSION_LEVEL, 0x5e78),
+            (UInt8(4), 0x5e78),
+            (LibDeflate.DEFAULT_COMPRESSION_LEVEL, 0x9c78),
             (UInt8(12), 0xda78),
         ]
         compressor = Compressor(compresslevel)
