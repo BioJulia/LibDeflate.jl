@@ -449,7 +449,7 @@ end
 
 Result of `LibDeflate`'s gzip decompression.
 
-It has the following fields:
+It has the following properties:
 * `written::UInt` number of decompressed bytes written
 * `read::UInt` number of bytes read from input
 * `header::GzipHeader` metadata
@@ -655,9 +655,6 @@ Low-level variant of [`gzip_decompress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 value, and errors as `gzip_decompress!`.
 
-On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
-state.
-
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `output` and `input` must not overlap (alias).
@@ -824,10 +821,6 @@ end
 Low-level variant of [`gzip_decompress_all!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 value, errors, and effects on `scratch` as `gzip_decompress_all!`.
-
-On error, return a tuple of `result` and a `LibDeflateError`. The first `result.written`
-bytes of `output` are well-defined and valid, but any subsequent bytes are in an arbitrary
-undefined state.
 
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
@@ -1104,9 +1097,6 @@ end
 Low-level variant of [`gzip_compress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same compression behavior, metadata
 rules, return value, and errors as `gzip_compress!`.
-
-On error, return a `LibDeflateError`, and leave the content of `out` in an arbitrary
-state.
 
 The caller must keep the allocations referenced by `out`, `in`, and every non-`nothing`
 metadata argument alive, typically by wrapping both construction of the memory wrappers

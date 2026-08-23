@@ -6,7 +6,8 @@ using libdeflate_jll
 """
     Module LibDeflateErrors
 
-Dummy module to contain the variants of the `LibDeflateError` enum.
+Dummy module to contain the variants of the `LibDeflateError` enum
+as a namespace.
 """
 module LibDeflateErrors
 
@@ -51,7 +52,7 @@ module LibDeflateErrors
     Error meanings:
 
     * `overflow`: An input would cause an integer to overflow. For example, this can happen if
-    the compression bound cannot be represented as a `UInt`.
+      the compression bound cannot be represented as a `UInt`.
     * `input_too_short`: mandatory gzip or zlib wrapper bytes are missing.
     * `not_deflate`: a gzip or zlib compression-method field does not specify DEFLATE,
       the only compression algorithm currently supported.
@@ -207,6 +208,9 @@ so must be used with `GC.@preserve`. This type can be constructed from `DenseArr
 from a `Ptr` and an `Integer`.
 To make custom types available as input for `LibDeflate`, add a constructor taking
 your custom type.
+This type implements pointer(::ReadableMemory)::Ptr{Nothing} and sizeof(::ReadableMemory)::Int.
+
+See also: [`WriteableMemory`](@ref)
 
 # Examples:
 ```jldoctest
@@ -270,7 +274,7 @@ Base.sizeof(x::Union{ReadableMemory, WriteableMemory})::Int = x.len % Int
 
 Create an object which can decompress using the DEFLATE algorithm.
 
-Creating this object allocates, so when decompressing multiple blocks, keep
+Creating this object allocates, so when decompressing multiple DEFLATE blocks, keep
 the same decompressor in memory rather than making one for each block.
 If the C library fails to allocate this object, an `OutOfMemory` error is thrown.
 
@@ -329,10 +333,10 @@ end
     Compressor(compresslevel::UInt8=$(repr(DEFAULT_COMPRESSION_LEVEL)))
 
 Create an object which can compress using the DEFLATE algorithm. `compresslevel`
-can be from level 1 (fast) to 12 (slow), and defaults to $(repr(DEFAULT_COMPRESSION_LEVEL)).
+can be from level 1 (fast) to 12 (slow), and defaults to $(DEFAULT_COMPRESSION_LEVEL).
 Level 0 means no compression.
 
-Creating this object allocates, so when compressing multiple blocks, keep
+Creating this object allocates, so when compressing multiple DEFLATE blocks, keep
 the same compressor in memory rather than making one for each block.
 If the C library fails to allocate this object, an `OutOfMemory` error is thrown.
 
@@ -467,9 +471,6 @@ Low-level variant of [`decompress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 values, and errors as `decompress!`.
 
-On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
-state.
-
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `output` and `input` must not overlap (alias).
@@ -509,7 +510,9 @@ On error, return a `LibDeflateError`, and leave the content of `output` in an ar
 state.
 
 The function returns `LibDeflateErrors.insufficient_output_space` if the decompressed data
-does not fit. If the exact decompressed size is known, pass it as `n_out` to use the
+does not fit.
+
+If the exact decompressed size is known, pass it as `n_out` to use the
 faster known-size path. An incorrect size returns
 `LibDeflateErrors.decompressed_size_too_small` or
 `LibDeflateErrors.decompressed_size_too_large`.
@@ -599,7 +602,10 @@ function _unsafe_decompress!(
 end
 
 """
-    deflate_compress_bound(compressor::Compressor, input_size::UInt)::Union{LibDeflateError, UInt}
+    deflate_compress_bound(
+        compressor::Compressor,
+        input_size::UInt
+    mi)::Union{LibDeflateError, UInt}
 
 Return a worst-case upper bound on the number of bytes produced by
 [`compress!`](@ref) when compressing `input_size` bytes with `compressor`.
@@ -636,9 +642,6 @@ end
 Low-level variant of [`compress!`](@ref) that operates directly on `WriteableMemory`
 and `ReadableMemory`. It has the same compression behavior, return value, and errors as
 `compress!`.
-
-On error, return a `LibDeflateError`, and leave the content of `out` in an arbitrary
-state.
 
 The caller must keep the allocations referenced by `out` and `in` alive, typically by
 wrapping both construction of the memory wrappers and this call in `GC.@preserve`.

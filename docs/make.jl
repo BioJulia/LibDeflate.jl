@@ -19,6 +19,7 @@ makedocs(
     doctest = true,
     pages = [
         "LibDeflate" => "index.md",
+        "Migration from 0.4 to 1.0" => "migration-0.4-to-1.0.md",
         "Reference" => "reference.md",
     ],
     authors = "Jakob Nybo Andersen",

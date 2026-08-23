@@ -14,9 +14,6 @@ Low-level variant of [`zlib_decompress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 value, and errors as `zlib_decompress!`.
 
-On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
-state.
-
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `output` and `input` must not overlap (alias).
@@ -191,10 +188,8 @@ end
 """
     zlib_compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
-Compress `input` as a zlib stream into `output`, returning the number of bytes written
-or `LibDeflateErrors.insufficient_output_space` if the output is too small. The output
-is never resized.
-
+Compress `input` as a zlib stream into `output`, returning the number of bytes written.
+The output is never resized.
 On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
 state.
 
@@ -240,9 +235,6 @@ end
 Low-level variant of [`zlib_compress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same compression behavior, return
 value, and errors as `zlib_compress!`.
-
-On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
-state.
 
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
