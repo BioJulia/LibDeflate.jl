@@ -153,8 +153,8 @@ end
 
 Struct representing a gzip header. It has the following properties:
 * `mtime::Union{Nothing, NonZeroUInt32}`: modification time of the file, as expressed by
-  a UNIX timestamp mod 2^32. The value zero is not permitted by the gzip format, and so
-  the value is stored in a [`NonZeroUInt32`](@ref).
+  a UNIX timestamp mod 2^32. A zero timestamp means that the time is unavailable, and is
+  represented by `nothing`; a nonzero timestamp is stored in a [`NonZeroUInt32`](@ref).
 * `filename::Union{Nothing, UnitRange{UInt}}`: index of the filename in the header.
   `nothing` means that the `FNAME` flag is absent, while an empty range means that the
   flag is present but the filename is empty.
@@ -167,6 +167,7 @@ Struct representing a gzip header. It has the following properties:
   this range.
   `nothing` means that the `FEXTRA` flag is absent, while an empty range means that the
   flag is present with `XLEN == 0`.
+* `flags::UInt8`, `extra_flags::UInt8`, `os::UInt8`: the raw bytes from the stream.
 
 The `filename` and `comment` ranges refer to raw bytes. Their encoding is not validated;
 RFC 1952 specifies ISO 8859-1 (Latin-1) for these fields.
@@ -192,14 +193,20 @@ struct GzipHeader
     comment::Tuple{UInt, UInt}
     # NonZeroUInt32, with the all-zero bitpattern encoding `nothing`
     mtime::UInt32
+    flags::UInt8
+    extra_flags::UInt8
+    os::UInt8
 
     global function new_gzip_header(
             extra::Tuple{UInt, UInt},
             filename::Tuple{UInt, UInt},
             comment::Tuple{UInt, UInt},
             mtime::UInt32,
+            flags::UInt8,
+            extra_flags::UInt8,
+            os::UInt8,
         )
-        return new(extra, filename, comment, mtime)
+        return new(extra, filename, comment, mtime, flags, extra_flags, os)
     end
 end
 
@@ -218,12 +225,18 @@ function GzipHeader(
         filename::Union{Nothing, UnitRange{UInt}},
         comment::Union{Nothing, UnitRange{UInt}},
         mtime::Union{NonZeroUInt32, Nothing},
+        flags::UInt8,
+        extra_flags::UInt8,
+        os::UInt8
     )
     return new_gzip_header(
         store_gzip_header_range(extra),
         store_gzip_header_range(filename),
         store_gzip_header_range(comment),
         isnothing(mtime) ? UInt32(0) : mtime.x,
+        flags,
+        extra_flags,
+        os
     )
 end
 
@@ -237,7 +250,10 @@ function add_offset_to_header(header::GzipHeader, offset::UInt)
         getfield(header, :extra),
         add_offset_to_range(getfield(header, :filename), offset),
         add_offset_to_range(getfield(header, :comment), offset),
-        getfield(header, :mtime)
+        getfield(header, :mtime),
+        getfield(header, :flags),
+        getfield(header, :extra_flags),
+        getfield(header, :os),
     )
 end
 
@@ -256,7 +272,7 @@ end
 end
 
 function Base.propertynames(::GzipHeader, private::Bool = false)
-    return (:extra, :filename, :comment, :mtime)
+    return (:extra, :filename, :comment, :mtime, :flags, :extra_flags, :os)
 end
 
 """
@@ -341,14 +357,15 @@ function _unsafe_parse_gzip_header(
     header = ltoh(unsafe_load(Ptr{UInt32}(ptr + 1)))
     header & 0x0000ffff == 0x00008b1f || return LibDeflateErrors.gzip_bad_magic_bytes
     header & 0x00ff0000 == 0x00080000 || return LibDeflateErrors.gzip_not_deflate
-    iszero(header & 0xe0000000) || return LibDeflateErrors.gzip_bad_flags
-    FLAG_HCRC = !iszero(header & 0x02000000)
-    FLAG_EXTRA = !iszero(header & 0x04000000)
-    FLAG_NAME = !iszero(header & 0x08000000)
-    FLAG_COMMENT = !iszero(header & 0x10000000)
+    flags = (header >> 24) % UInt8
+    iszero(flags & 0xe0) || return LibDeflateErrors.gzip_bad_flags
+    FLAG_HCRC = !iszero(flags & 0x02)
+    FLAG_EXTRA = !iszero(flags & 0x04)
+    FLAG_NAME = !iszero(flags & 0x08)
+    FLAG_COMMENT = !iszero(flags & 0x10)
     mtime = try_nonzero_uint32(ltoh(unsafe_load(Ptr{UInt32}(ptr + 5))))
-
-    # Skip MTIME, XFL, and OS; they are not otherwise useful here.
+    extra_flags = unsafe_load(ptr + 9)
+    os = unsafe_load(ptr + 10)
     index = UInt(11)
 
     extra = nothing
@@ -412,7 +429,17 @@ function _unsafe_parse_gzip_header(
         index += UInt(2)
     end
 
-    return (; read = index - one(UInt), header = GzipHeader(extra, filename, comment, mtime))
+    header = GzipHeader(
+        extra,
+        filename,
+        comment,
+        mtime,
+        flags,
+        extra_flags,
+        os
+    )
+
+    return (; read = index - one(UInt), header)
 end
 
 """
@@ -544,6 +571,9 @@ On success, the returned result reports both the decompressed length and the tot
 number of input bytes consumed by that member. Following gzip members or trailing data
 are left unread.
 
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
+
 The function empties `extra_fields` before validation and appends the member's parsed
 extra fields to it. The returned header's `extra` range contains the indices of those
 fields in `extra_fields`.
@@ -622,6 +652,9 @@ end
 Low-level variant of [`gzip_decompress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 value, and errors as `gzip_decompress!`.
+
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
 
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
@@ -719,6 +752,10 @@ On success, return `GzipDecompressAllResult` with statistics of the decompressio
 If an error is encountered, return a tuple containing the same statistics for all
 members completed before the error, followed by the `LibDeflateError`.
 
+On error, return a tuple of `result` and a `LibDeflateError`. The first `result.written`
+bytes of `output` are well-defined and valid, but any subsequent bytes are in an arbitrary
+undefined state.
+
 Empty both vectors in `scratch` before validation. On return, `scratch.extra_fields`
 contains fields from every completed member and `scratch.member_results` contains one
 result per completed member. A failing member contributes to neither vector.
@@ -786,6 +823,10 @@ end
 Low-level variant of [`gzip_decompress_all!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 value, errors, and effects on `scratch` as `gzip_decompress_all!`.
+
+On error, return a tuple of `result` and a `LibDeflateError`. The first `result.written`
+bytes of `output` are well-defined and valid, but any subsequent bytes are in an arbitrary
+undefined state.
 
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
@@ -960,6 +1001,9 @@ Compress `input` as gzip data into the fixed-size buffer `output`, returning the
 number of bytes written or `LibDeflateErrors.deflate_insufficient_space` if it does not
 fit. The output is never resized.
 
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
+
 Use [`gzip_compress_bound`](@ref) to determine an output size that is guaranteed to
 be sufficient.
 
@@ -968,6 +1012,9 @@ Optional `comment`, `filename`, and `extra` metadata are omitted when set to `no
 extra data and must not exceed `typemax(UInt16)` bytes.
 `comment` and `filename` are otherwise treated as uninterpreted bytes: their encoding is
 not validated, although RFC 1952 specifies ISO 8859-1 (Latin-1).
+Currently the OS byte is set to 255, XFL set to 2 (compression level 12), 4 (compression level 1), or
+0 (any other level), according to RFC 1952 v4.2,
+and the FTEXT flag unset. This behaviour is subject to change.
 
 `mtime` is the modification time in seconds since the Unix epoch represented by a
 [`NonZeroUInt32`](@ref), or `nothing` if not available.
@@ -1057,6 +1104,9 @@ Low-level variant of [`gzip_compress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same compression behavior, metadata
 rules, return value, and errors as `gzip_compress!`.
 
+On error, return a `LibDeflateError`, and leave the content of `out` in an arbitrary
+state.
+
 The caller must keep the allocations referenced by `out`, `in`, and every non-`nothing`
 metadata argument alive, typically by wrapping both construction of the memory wrappers
 and this call in `GC.@preserve`. The memory region referenced by `out` must not overlap
@@ -1113,8 +1163,10 @@ function unsafe_gzip_compress!(
     u_mtime = isnothing(mtime) ? UInt32(0) : mtime.x
     unsafe_store!(Ptr{UInt32}(ptr + 5), htol(u_mtime))
 
-    # Add system (unknown) and XFL (zero)
-    unsafe_store!(Ptr{UInt16}(ptr + 9), htol(0x00ff))
+    # Add XFL (2 if highest compression level, 4 if lowest) and system (unknown).
+    xfl = compressor.level == 1 ? UInt8(4) : (compressor.level == 12 ? UInt8(2) : UInt8(0))
+    unsafe_store!(ptr + 9, xfl)
+    unsafe_store!(ptr + 10, UInt8(255))
 
     index = UInt(11)
 

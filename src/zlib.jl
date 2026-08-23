@@ -14,6 +14,9 @@ Low-level variant of [`zlib_decompress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 value, and errors as `zlib_decompress!`.
 
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
+
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `output` and `input` must not overlap (alias).
@@ -92,6 +95,9 @@ end
 Decompress `input` as a zlib stream into `output`. If the exact decompressed size is
 known, pass it as `n_out` to use the faster known-size path. Return the number of bytes
 written or a `LibDeflateError`.
+
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
 
 `ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
 preserving both arguments from garbage collection for the duration of the call. Custom
@@ -183,6 +189,9 @@ end
 Compress `input` as a zlib stream into `output`, returning the number of bytes written
 or a `LibDeflateError` if the output is too small. The output is never resized.
 
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
+
 `ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
 preserving both arguments from garbage collection for the duration of the call. Custom
 input and output types can opt in by implementing those constructors. This function does
@@ -226,6 +235,9 @@ Low-level variant of [`zlib_compress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same compression behavior, return
 value, and errors as `zlib_compress!`.
 
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
+
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `output` and `input` must not overlap (alias).
@@ -238,14 +250,15 @@ function unsafe_zlib_compress!(
     output.len < UInt(6) && return LibDeflateErrors.zlib_insufficient_space
 
     # Each header is divisible by 31 when interpreted in big-endian order.
-    header = if compressor.level == UInt8(1)
-        0x0178
-    elseif compressor.level == DEFAULT_COMPRESSION_LEVEL
-        0x5e78
-    elseif compressor.level == UInt8(12)
-        0xda78
+    # This is required for the zlib specification.
+    header = if compressor.level ∈ 0x00:0x01
+        0x0178 # FLEVEL 0
+    elseif compressor.level ∈ 0x02:0x05
+        0x5e78 # FLEVEL 1
+    elseif compressor.level ∈ 0x06:0x0b
+        0x9c78 # FLEVEL 2
     else
-        0x9c78
+        0xda78 # FLEVEL 3
     end
 
     output_ptr = Ptr{UInt8}(pointer(output))

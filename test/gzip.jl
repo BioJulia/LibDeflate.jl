@@ -64,6 +64,9 @@ function test_header_example(
         header::LibDeflate.GzipHeader,
     )
     @test header.mtime == NonZeroUInt32(0x60512cb3)
+    @test header.flags === UInt8(0x1e)
+    @test header.extra_flags === UInt8(0xff)
+    @test header.os === UInt8(0x00)
     @test length(header.extra) == 2
     extras = extra_fields[header.extra]
     @test first(extras).tag == (0x42, 0x43)
@@ -98,7 +101,10 @@ end
     @test header.extra isa UnitRange{UInt}
     @test header.filename isa UnitRange{UInt}
     @test header.comment isa UnitRange{UInt}
-    @test propertynames(header) == (:extra, :filename, :comment, :mtime)
+    @test propertynames(header) == (:extra, :filename, :comment, :mtime, :flags, :extra_flags, :os)
+    @test hasproperty(header, :flags)
+    @test hasproperty(header, :extra_flags)
+    @test hasproperty(header, :os)
     @test first(extra_fields[header.extra]).data isa UnitRange{UInt}
     test_header_example(header_data, extra_fields, header)
 
@@ -142,6 +148,10 @@ end
     header = parse_gzip_header(header_without_extra, extra_fields).header
     @test header.extra === nothing
     @test isempty(extra_fields)
+
+    unknown_os_header = copy(header_without_extra)
+    unknown_os_header[10] = 0x2a
+    @test parse_gzip_header(unknown_os_header, extra_fields).header.os === UInt8(0x2a)
 
     # Reused output is cleared before validation and therefore also on early errors.
     sentinel = make_empty_extra_field()
@@ -300,6 +310,22 @@ test_filename = "testfile.foo"
     )
     @test parse_gzip_header(mtime_output[1:n_bytes], extra_fields).header.mtime ==
         explicit_mtime
+
+    for (level, expected_xfl) in (
+            (UInt8(0), UInt8(0)),
+            (UInt8(1), UInt8(4)),
+            (UInt8(6), UInt8(0)),
+            (UInt8(12), UInt8(2)),
+        )
+        level_compressor = Compressor(level)
+        level_output = zeros(
+            UInt8, gzip_compress_bound(level_compressor, UInt(sizeof(data)))
+        )
+        n_bytes = gzip_compress!(level_compressor, level_output, data)
+        header = parse_gzip_header(level_output[1:n_bytes], extra_fields).header
+        @test header.extra_flags === expected_xfl
+        @test header.os === UInt8(0xff)
+    end
 
     base_bound = gzip_compress_bound(compressor, UInt(0))
     @test base_bound isa UInt
@@ -683,9 +709,15 @@ end
         UInt(17):UInt(18)
     @test String(with_metadata[first_result.header.filename]) == "filename.fna"
     @test String(with_metadata[first_result.header.comment]) == "αβ学中文"
+    @test first_result.header.flags === UInt8(0x1e)
+    @test first_result.header.extra_flags === UInt8(0xff)
+    @test first_result.header.os === UInt8(0x00)
     @test middle_result.header.extra === nothing
     @test middle_result.header.filename === nothing
     @test middle_result.header.comment === nothing
+    @test middle_result.header.flags === prefix_member[4]
+    @test middle_result.header.extra_flags === prefix_member[9]
+    @test middle_result.header.os === prefix_member[10]
     @test middle_result.read == length(prefix_member)
     @test middle_result.written == sizeof("prefix")
     last_offset = UInt(length(complex_test_case) + length(prefix_member))
@@ -697,6 +729,9 @@ end
     @test first(last_result.header.comment) == last_offset + UInt(36)
     @test last_result.read == length(complex_test_case)
     @test last_result.written == sizeof("Abracadabra")
+    @test last_result.header.flags === UInt8(0x1e)
+    @test last_result.header.extra_flags === UInt8(0xff)
+    @test last_result.header.os === UInt8(0x00)
     scratch.extra_fields[1] = sentinel
     @test scratch.extra_fields[first(first(scratch.member_results).header.extra)] == sentinel
 

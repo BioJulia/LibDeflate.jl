@@ -294,7 +294,8 @@ end
     Compressor(compresslevel::UInt8=$(repr(DEFAULT_COMPRESSION_LEVEL)))
 
 Create an object which can compress using the DEFLATE algorithm. `compresslevel`
-can be from 1 (fast) to 12 (slow), and defaults to $(repr(DEFAULT_COMPRESSION_LEVEL)).
+can be from level 1 (fast) to 12 (slow), and defaults to $(repr(DEFAULT_COMPRESSION_LEVEL)).
+Level 0 means no compression.
 
 Creating this object allocates, so when compressing multiple blocks, keep
 the same compressor in memory rather than making one for each block.
@@ -329,8 +330,8 @@ mutable struct Compressor
     const level::UInt8
 
     function Compressor(compresslevel::UInt8 = DEFAULT_COMPRESSION_LEVEL)
-        compresslevel in UInt8(1):UInt8(12) ||
-            throw(ArgumentError("Compresslevel must be in 1:12"))
+        compresslevel in UInt8(0):UInt8(12) ||
+            throw(ArgumentError("Compresslevel must be in 0:12"))
         ptr = @ccall gc_safe = true libdeflate.libdeflate_alloc_compressor(
             (compresslevel % Cint)::Cint
         )::Ptr{Cvoid}
@@ -418,6 +419,9 @@ Low-level variant of [`decompress!`](@ref) that operates directly on
 `WriteableMemory` and `ReadableMemory`. It has the same decompression behavior, return
 values, and errors as `decompress!`.
 
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
+
 The caller must keep the allocations referenced by `output` and `input` alive, typically
 by wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `output` and `input` must not overlap (alias).
@@ -451,7 +455,10 @@ end
 Decompress a DEFLATE stream, reading from the beginning of `input` and writing
 decompressed data to the beginning of `output`. Reading stops at the end of the
 DEFLATE stream, so trailing input is left unread. On success, return the number of
-bytes read and written; on error, return a `LibDeflateError`.
+bytes read and written.
+
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
 
 The function returns `LibDeflateErrors.deflate_insufficient_space` if the decompressed data
 does not fit. If the exact decompressed size is known, pass it as `n_out` to use the
@@ -582,6 +589,9 @@ Low-level variant of [`compress!`](@ref) that operates directly on `WriteableMem
 and `ReadableMemory`. It has the same compression behavior, return value, and errors as
 `compress!`.
 
+On error, return a `LibDeflateError`, and leave the content of `out` in an arbitrary
+state.
+
 The caller must keep the allocations referenced by `out` and `in` alive, typically by
 wrapping both construction of the memory wrappers and this call in `GC.@preserve`.
 The memory regions referenced by `out` and `in` must not overlap (alias).
@@ -610,6 +620,9 @@ end
 Compress `input` as a DEFLATE payload into the beginning of `output`, returning
 the number of bytes written or `LibDeflateErrors.deflate_insufficient_space` if the
 output is too small. The output is never resized.
+
+On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
+state.
 
 `ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
 preserving both arguments from garbage collection for the duration of the call. Custom

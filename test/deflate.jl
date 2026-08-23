@@ -17,9 +17,9 @@
     c = Compressor()
     @test c.level == Compressor(UInt8(6)).level
     @test c.level isa UInt8
+    @test Compressor(UInt8(0)).level === UInt8(0)
     @test LibDeflate.DEFAULT_COMPRESSION_LEVEL isa UInt8
     @test_throws MethodError Compressor(6)
-    @test_throws ArgumentError Compressor(UInt8(0))
     @test_throws ArgumentError Compressor(UInt8(13))
 end
 
