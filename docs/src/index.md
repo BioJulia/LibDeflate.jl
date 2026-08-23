@@ -17,6 +17,7 @@ LibDeflate.jl implements the computationally lightweight parts in Julia and dele
 The API is intended to be low-level and precisely documented; for example, abstract types are avoided and precise unsigned integer types are used.
 The APIs have low allocation overhead (but are not zero-allocation) and are trimmable.
 
+## Usage
 !!! warning
     LibDeflate.jl's APIs are generally **not** thread-safe or safe in the presence of aliasing
     between memory buffers passed to a single function. It is the user's responsibility to ensure
@@ -38,3 +39,18 @@ See the reference in the sidebar for the full API. For an overview, this package
 * Functions for obtaining an upper bound on the number of bytes written when compressing a given number of bytes
 * CRC-32
 * Adler-32
+
+## Errors
+This package does not throw errors in the presence of invalid data, but instead return instances of `LibDeflateError`. For operations where only one error occurs, the value of the `LibDeflateError` is stable API and guaranteed not to change. However:
+* If an input contains multiple errors, which error is returned is an implementation detail.
+* The numerical value of enum values are subject to change; only their name and size (1 byte) is guaranteed.
+* Operations which return errors may be changed in future versions to succeed.
+
+Some code in this package **does** throw errors.
+This only happens when the user supplies arguments which are malformed Julia objects, and will never happen when de/compressing bad data (i.e. the external data is bad), or when de/compressing into insufficient space (i.e. the Julia buffer is good, but happens to be too short for the data).
+It may also happen for very unlikely or unrecoverable situations, such as allocation failures.
+Examples of error throwing code are:
+* Attempting to create a `Compressor` with an unsupported compression level
+* Attempting to create a `ReadableMemory` and `WrtieableMemory` with a length `> typemax(Int)`
+* Failure to allocate `Compressor` or `Decompressor`
+

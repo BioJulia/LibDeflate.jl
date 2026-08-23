@@ -12,35 +12,70 @@ module LibDeflateErrors
 
     @enum LibDeflateError::UInt8 begin
         overflow
+        input_too_short
+        not_deflate
+        insufficient_output_space
+        decompressed_size_too_small
+        decompressed_size_too_large
         deflate_bad_payload
-        deflate_output_too_short
-        deflate_insufficient_space
-        gzip_header_too_short
         gzip_bad_magic_bytes
-        gzip_not_deflate
-        gzip_bad_flags
-        gzip_string_not_null_terminated
-        gzip_null_in_string
+        gzip_reserved_flags_set
+        gzip_extra_too_long
+        gzip_bad_extra_length
+        gzip_filename_not_null_terminated
+        gzip_comment_not_null_terminated
+        gzip_filename_contains_null
+        gzip_comment_contains_null
         gzip_bad_header_crc16
         gzip_bad_crc32
-        gzip_extra_too_long
-        gzip_bad_extra
-        zlib_input_too_short
-        zlib_not_deflate
-        zlib_wrong_window_size
-        zlib_needs_compression_dict
-        zlib_bad_header_check
+        gzip_bad_isize
+        zlib_bad_window_size
+        zlib_dictionary_required
+        zlib_trailing_data
+        zlib_bad_header_checksum
         zlib_bad_adler32
-        zlib_insufficient_space
     end
 
     @doc """
         LibDeflateError
 
-    A `UInt8` enum representing that LibDeflate encountered an error. The numerical value
-    of the errors are not stable across non-breaking releases, but their names are.
-    Code checking for specific errors should check by e.g. ` == LibDeflateErrors.gzip_not_deflate`.
-    Successful operations will not return a `LibDeflateError`.
+    A `UInt8` enum representing that LibDeflate encountered an error. Error names and
+    their documented meanings are stable across non-breaking releases. Their underlying
+    numerical values are not. Code checking for a specific error should compare it to a
+    named value, e.g. `err == LibDeflateErrors.insufficient_output_space`.
+
+    For input containing multiple independent faults, which applicable error is returned
+    is unspecified. Successful operations will not return a `LibDeflateError`.
+    Operations that previously returned errors are allowed to succeed in future minor releases.
+
+    Error meanings:
+
+    * `overflow`: An input would cause an integer to overflow. For example, this can happen if
+    the compression bound cannot be represented as a `UInt`.
+    * `input_too_short`: mandatory gzip or zlib wrapper bytes are missing.
+    * `not_deflate`: a gzip or zlib compression-method field does not specify DEFLATE,
+      the only compression algorithm currently supported.
+    * `insufficient_output_space`: a compression result or unknown-size decompression
+      result does not fit the output buffer.
+    * `decompressed_size_too_small` and `decompressed_size_too_large`: the actual
+      decompressed size is respectively smaller or larger than the supplied exact size.
+    * `deflate_bad_payload`: the DEFLATE payload is invalid, truncated, or unsupported.
+    * `gzip_bad_magic_bytes`: the gzip identification bytes are invalid.
+    * `gzip_reserved_flags_set`: at least one reserved gzip flag is set.
+    * `gzip_extra_too_long`: encoder-provided gzip extra data exceeds `typemax(UInt16)`.
+    * `gzip_bad_extra_length`: gzip extra subfields do not fit their enclosing block.
+    * `gzip_filename_not_null_terminated` and `gzip_comment_not_null_terminated`: the
+      corresponding decoded header field has no terminating zero byte.
+    * `gzip_filename_contains_null` and `gzip_comment_contains_null`: the corresponding
+      encoder-provided metadata contains a zero byte.
+    * `gzip_bad_header_crc16`, `gzip_bad_crc32`, and `gzip_bad_isize`: the corresponding
+      gzip integrity field does not match the decoded member.
+    * `zlib_bad_window_size`: the zlib window-size field is invalid.
+    * `zlib_dictionary_required`: the stream requires a preset dictionary, which this
+      API does not support.
+    * `zlib_trailing_data`: bytes remain after the single complete zlib stream.
+    * `zlib_bad_header_checksum` and `zlib_bad_adler32`: the corresponding zlib checksum
+      is invalid.
 
     # Examples:
     ```jldoctest
@@ -56,7 +91,7 @@ module LibDeflateErrors
     julia> err isa LibDeflateError
     true
 
-    julia> err == LibDeflateErrors.deflate_insufficient_space
+    julia> err == LibDeflateErrors.insufficient_output_space
     true
     ```
     """
@@ -358,14 +393,14 @@ end
 # Compression and decompression functions
 
 # Raw C call - do not export this
-function _unsafe_decompress!(
+function _unsafe_decompress_status!(
         decompressor::Decompressor,
         out::WriteableMemory,
         in::ReadableMemory,
         actual_in_nbytes_ret::Ptr,
         actual_out_nbytes_ret::Ptr,
-    )::Union{LibDeflateError, Nothing}
-    status = GC.@preserve decompressor begin
+    )::Cint
+    return GC.@preserve decompressor begin
         @ccall gc_safe = true libdeflate.libdeflate_deflate_decompress_ex(
             decompressor::Ptr{Cvoid},
             pointer(in)::Ptr{UInt8},
@@ -376,14 +411,27 @@ function _unsafe_decompress!(
             actual_out_nbytes_ret::Ptr{Csize_t}
         )::Cint
     end
+end
+
+@inline function _decompression_error(::Base.HasLength, status::Cint)::LibDeflateError
     if status == Cint(1)
         return LibDeflateErrors.deflate_bad_payload
     elseif status == Cint(2)
-        return LibDeflateErrors.deflate_output_too_short
+        return LibDeflateErrors.decompressed_size_too_small
     elseif status == Cint(3)
-        return LibDeflateErrors.deflate_insufficient_space
+        return LibDeflateErrors.decompressed_size_too_large
     else
-        return nothing
+        error("Unexpected libdeflate decompression status: ", status)
+    end
+end
+
+@inline function _decompression_error(::Base.SizeUnknown, status::Cint)::LibDeflateError
+    if status == Cint(1)
+        return LibDeflateErrors.deflate_bad_payload
+    elseif status == Cint(3)
+        return LibDeflateErrors.insufficient_output_space
+    else
+        error("Unexpected libdeflate decompression status: ", status)
     end
 end
 
@@ -393,19 +441,19 @@ function _unsafe_decompress!(
         out::WriteableMemory,
         in::ReadableMemory,
     )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
-    y = GC.@preserve decompressor begin
+    status = GC.@preserve decompressor begin
         base_ptr = Ptr{UInt8}(pointer_from_objref(decompressor))
         actual_in_ptr = Ptr{Csize_t}(
             base_ptr + fieldoffset(Decompressor, 3)
         )
-        _unsafe_decompress!(
+        _unsafe_decompress_status!(
             decompressor, out, in, actual_in_ptr, C_NULL
         )
     end
-    return if y isa LibDeflateError
-        y
-    else
+    return if iszero(status)
         (; read = decompressor.actual_in_nbytes_ret, written = out.len)
+    else
+        _decompression_error(Base.HasLength(), status)
     end
 end
 
@@ -442,7 +490,7 @@ function unsafe_decompress!(
         input::ReadableMemory,
         n_out::UInt,
     )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
-    output.len < n_out && return LibDeflateErrors.deflate_insufficient_space
+    output.len < n_out && return LibDeflateErrors.insufficient_output_space
     exact_output = WriteableMemory(pointer(output), n_out)
     return _unsafe_decompress!(Base.HasLength(), decompressor, exact_output, input)
 end
@@ -460,11 +508,11 @@ bytes read and written.
 On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
 state.
 
-The function returns `LibDeflateErrors.deflate_insufficient_space` if the decompressed data
+The function returns `LibDeflateErrors.insufficient_output_space` if the decompressed data
 does not fit. If the exact decompressed size is known, pass it as `n_out` to use the
 faster known-size path. An incorrect size returns
-`LibDeflateErrors.deflate_output_too_short` or
-`LibDeflateErrors.deflate_insufficient_space`.
+`LibDeflateErrors.decompressed_size_too_small` or
+`LibDeflateErrors.decompressed_size_too_large`.
 
 `ReadableMemory(input)` and `WriteableMemory(output)` are constructed safely by
 preserving both arguments from garbage collection for the duration of the call. Custom
@@ -524,7 +572,7 @@ function _unsafe_decompress!(
         out::WriteableMemory,
         in::ReadableMemory,
     )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
-    y = GC.@preserve decompressor begin
+    status = GC.@preserve decompressor begin
         base_ptr = Ptr{UInt8}(pointer_from_objref(decompressor))
         actual_out_ptr = Ptr{Csize_t}(
             base_ptr + fieldoffset(Decompressor, 2)
@@ -532,7 +580,7 @@ function _unsafe_decompress!(
         actual_in_ptr = Ptr{Csize_t}(
             base_ptr + fieldoffset(Decompressor, 3)
         )
-        _unsafe_decompress!(
+        _unsafe_decompress_status!(
             decompressor,
             out,
             in,
@@ -540,13 +588,13 @@ function _unsafe_decompress!(
             actual_out_ptr,
         )
     end
-    return if y isa LibDeflateError
-        y
-    else
+    return if iszero(status)
         (;
             read = decompressor.actual_in_nbytes_ret,
             written = decompressor.actual_nbytes_ret,
         )
+    else
+        _decompression_error(Base.SizeUnknown(), status)
     end
 end
 
@@ -610,7 +658,7 @@ function unsafe_compress!(
             out.len::Csize_t
         )::Csize_t
     end
-    iszero(bytes) && return LibDeflateErrors.deflate_insufficient_space
+    iszero(bytes) && return LibDeflateErrors.insufficient_output_space
     return bytes
 end
 
@@ -618,7 +666,7 @@ end
     compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
 Compress `input` as a DEFLATE payload into the beginning of `output`, returning
-the number of bytes written or `LibDeflateErrors.deflate_insufficient_space` if the
+the number of bytes written or `LibDeflateErrors.insufficient_output_space` if the
 output is too small. The output is never resized.
 
 On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary

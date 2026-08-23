@@ -32,31 +32,43 @@ zlib_test_data = [
     @test zlib_decompress!(decompressor, output, small_window, UInt(3)) == 3
 
     @test zlib_decompress!(decompressor, output, indata, UInt(2)) ==
-        LibDeflateErrors.deflate_insufficient_space
+        LibDeflateErrors.decompressed_size_too_large
     @test zlib_decompress!(decompressor, output, indata, UInt(4)) ==
-        LibDeflateErrors.deflate_output_too_short
+        LibDeflateErrors.decompressed_size_too_small
     @test_throws MethodError zlib_decompress!(decompressor, output, indata, 3)
 
     @test zlib_decompress!(decompressor, output[1:2], indata, UInt(3)) ==
-        LibDeflateErrors.deflate_insufficient_space
+        LibDeflateErrors.insufficient_output_space
     @test zlib_decompress!(decompressor, output[1:2], indata) ==
-        LibDeflateErrors.deflate_insufficient_space
+        LibDeflateErrors.insufficient_output_space
+
+    @test zlib_decompress!(decompressor, output, UInt8[]) ==
+        LibDeflateErrors.input_too_short
+    truncated_trailer = indata[1:(end - 1)]
+    @test zlib_decompress!(decompressor, output, truncated_trailer) ==
+        LibDeflateErrors.input_too_short
+    @test GC.@preserve output truncated_trailer unsafe_zlib_decompress!(
+        decompressor, WriteableMemory(output), ReadableMemory(truncated_trailer)
+    ) == LibDeflateErrors.input_too_short
 
     cp = copy(indata)
 
-    cp[1] = 0x79
-    @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_not_deflate
+    cp[1:2] = UInt8[0x79, 0x18]
+    @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.not_deflate
 
-    cp[1] = 0x98
-    @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_wrong_window_size
+    cp[1:2] = UInt8[0x88, 0x1c]
+    @test zlib_decompress!(decompressor, output, cp) ==
+        LibDeflateErrors.zlib_bad_window_size
+
+    cp[1:2] = UInt8[0x78, 0x20]
+    @test zlib_decompress!(decompressor, output, cp) ==
+        LibDeflateErrors.zlib_dictionary_required
+
+    cp[1:2] = UInt8[0x78, 0x5f]
+    @test zlib_decompress!(decompressor, output, cp) ==
+        LibDeflateErrors.zlib_bad_header_checksum
+
     cp[1] = 0x78
-
-    cp[2] = 0xff
-    @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_needs_compression_dict
-
-    cp[2] = 0x5c
-    @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_header_check
-
     cp[2] = 0x01
     @test zlib_decompress!(decompressor, output, cp, UInt(3)) == 3
     cp[2] = 0xda
@@ -67,11 +79,19 @@ zlib_test_data = [
     cp[end] = 0x46
     @test zlib_decompress!(decompressor, output, cp) == LibDeflateErrors.zlib_bad_adler32
 
-    trailing_payload = vcat(indata[1:(end - 4)], 0xaa, 0xbb, indata[(end - 3):end])
-    @test zlib_decompress!(decompressor, output, trailing_payload) ==
+    bad_payload = UInt8[0x78, 0x01, 0x07, 0x00, 0x00, 0x00, 0x01]
+    @test zlib_decompress!(decompressor, output, bad_payload) ==
         LibDeflateErrors.deflate_bad_payload
-    @test zlib_decompress!(decompressor, output, trailing_payload, UInt(3)) ==
-        LibDeflateErrors.deflate_bad_payload
+
+    trailing_data = vcat(indata, 0xaa, 0xbb)
+    @test zlib_decompress!(decompressor, output, trailing_data) ==
+        LibDeflateErrors.zlib_trailing_data
+    @test zlib_decompress!(decompressor, output, trailing_data, UInt(3)) ==
+        LibDeflateErrors.zlib_trailing_data
+
+    concatenated = vcat(indata, indata)
+    @test zlib_decompress!(decompressor, output, concatenated) ==
+        LibDeflateErrors.zlib_trailing_data
 end
 
 @testset "Compression" begin
@@ -92,9 +112,9 @@ end
     @test n_compressed isa UInt
     @test transcode(ZlibDecompressor, output_32[1:n_compressed]) == Vector{UInt8}("foo")
     @test zlib_compress!(compressor, zeros(UInt8, 0), "foo") ==
-        LibDeflateErrors.zlib_insufficient_space
+        LibDeflateErrors.insufficient_output_space
     @test zlib_compress!(compressor, zeros(UInt8, 8), "foo") ==
-        LibDeflateErrors.deflate_insufficient_space
+        LibDeflateErrors.insufficient_output_space
 
     input = CustomReadable(Vector{UInt8}("custom bound input"))
     bound = zlib_compress_bound(compressor, UInt(sizeof(input.data)))

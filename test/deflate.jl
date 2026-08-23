@@ -24,28 +24,76 @@
 end
 
 @testset "Errors" begin
-    # No space for decompression
+    @test Set(string.(instances(LibDeflateError))) == Set(
+        [
+            "overflow",
+            "input_too_short",
+            "not_deflate",
+            "insufficient_output_space",
+            "decompressed_size_too_small",
+            "decompressed_size_too_large",
+            "deflate_bad_payload",
+            "gzip_bad_magic_bytes",
+            "gzip_reserved_flags_set",
+            "gzip_extra_too_long",
+            "gzip_bad_extra_length",
+            "gzip_filename_not_null_terminated",
+            "gzip_comment_not_null_terminated",
+            "gzip_filename_contains_null",
+            "gzip_comment_contains_null",
+            "gzip_bad_header_crc16",
+            "gzip_bad_crc32",
+            "gzip_bad_isize",
+            "zlib_bad_window_size",
+            "zlib_dictionary_required",
+            "zlib_trailing_data",
+            "zlib_bad_header_checksum",
+            "zlib_bad_adler32",
+        ]
+    )
+
+    # No space for compression
     v = Vector{UInt8}("Hello, there!")
     c = Compressor()
     d = Decompressor()
-    @test compress!(c, zeros(UInt8, 16), v) == LibDeflateErrors.deflate_insufficient_space
+    @test compress!(c, zeros(UInt8, 16), v) ==
+        LibDeflateErrors.insufficient_output_space
+    compressed_output = zeros(UInt8, 16)
+    @test GC.@preserve v compressed_output unsafe_compress!(
+        c, WriteableMemory(compressed_output), ReadableMemory(v)
+    ) == LibDeflateErrors.insufficient_output_space
 
     # BTYPE=3 is reserved, so this is deterministically invalid DEFLATE data.
-    @test decompress!(d, zeros(UInt8, 512), UInt8[0x07]) ==
+    bad_payload = UInt8[0x07]
+    output = zeros(UInt8, 512)
+    @test decompress!(d, output, bad_payload) ==
         LibDeflateErrors.deflate_bad_payload
+    @test GC.@preserve output bad_payload unsafe_decompress!(
+        d, WriteableMemory(output), ReadableMemory(bad_payload)
+    ) == LibDeflateErrors.deflate_bad_payload
 
-    # Decompressed data too short
+    # Decompressed data larger than the declared exact size
     v = zeros(UInt8, 256)
     bytes = compress!(c, v, Vector{UInt8}("ABC"^51))
     compressed = v[1:bytes]
     @test decompress!(d, zeros(UInt8, 1024), compressed, UInt(150)) ==
-        LibDeflateErrors.deflate_insufficient_space
+        LibDeflateErrors.decompressed_size_too_large
+    exact_output = zeros(UInt8, 1024)
+    @test GC.@preserve exact_output compressed unsafe_decompress!(
+        d, WriteableMemory(exact_output), ReadableMemory(compressed), UInt(150)
+    ) == LibDeflateErrors.decompressed_size_too_large
 
-    # Decompressed data too long
+    # Unknown-size output does not fit the buffer.
     @test decompress!(d, zeros(UInt8, 32), compressed) ==
-        LibDeflateErrors.deflate_insufficient_space
+        LibDeflateErrors.insufficient_output_space
+
+    # Decompressed data smaller than the declared exact size
     @test decompress!(d, zeros(UInt8, 1024), compressed, UInt(160)) ==
-        LibDeflateErrors.deflate_output_too_short
+        LibDeflateErrors.decompressed_size_too_small
+
+    # The backing output buffer cannot hold the declared exact size.
+    @test decompress!(d, zeros(UInt8, 100), compressed, UInt(153)) ==
+        LibDeflateErrors.insufficient_output_space
     @test_throws MethodError decompress!(d, zeros(UInt8, 1024), compressed, 160)
 end
 

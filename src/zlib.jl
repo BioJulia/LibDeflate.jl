@@ -37,7 +37,7 @@ function unsafe_zlib_decompress!(
         input::ReadableMemory,
         n_out::UInt,
     )::Union{LibDeflateError, UInt}
-    output.len < n_out && return LibDeflateErrors.deflate_insufficient_space
+    output.len < n_out && return LibDeflateErrors.insufficient_output_space
     exact_output = WriteableMemory(pointer(output), n_out)
     return _unsafe_zlib_decompress!(
         Base.HasLength(), decompressor, exact_output, input
@@ -51,34 +51,36 @@ function _unsafe_zlib_decompress!(
         input::ReadableMemory,
     )::Union{LibDeflateError, UInt}
     # Two header bytes, at least an empty DEFLATE payload, and four checksum bytes.
-    input.len < UInt(6) && return LibDeflateErrors.zlib_input_too_short
+    input.len < UInt(6) && return LibDeflateErrors.input_too_short
 
     input_ptr = Ptr{UInt8}(pointer(input))
     header = ltoh(unsafe_load(Ptr{UInt16}(input_ptr)))
 
     # CMF: the low nibble is the DEFLATE compression method.
-    header & 0x000f != 0x0008 && return LibDeflateErrors.zlib_not_deflate
+    header & 0x000f != 0x0008 && return LibDeflateErrors.not_deflate
 
     # CINFO values 0 through 7 declare windows from 256 bytes through 32 KiB.
-    header & 0x00f0 > 0x0070 && return LibDeflateErrors.zlib_wrong_window_size
+    header & 0x00f0 > 0x0070 && return LibDeflateErrors.zlib_bad_window_size
 
     # libdeflate does not support preset dictionaries.
-    header & 0x2000 != 0x0000 && return LibDeflateErrors.zlib_needs_compression_dict
+    header & 0x2000 != 0x0000 && return LibDeflateErrors.zlib_dictionary_required
 
     # `header` is little-endian in memory, while the zlib check uses big-endian order.
-    iszero(mod(bswap(header), UInt16(31))) || return LibDeflateErrors.zlib_bad_header_check
+    iszero(mod(bswap(header), UInt16(31))) ||
+        return LibDeflateErrors.zlib_bad_header_checksum
 
-    compressed_len = input.len - UInt(6)
-    compressed = ReadableMemory(input_ptr + 2, compressed_len)
+    compressed = ReadableMemory(input_ptr + 2, input.len - UInt(2))
     decomp_result = _unsafe_decompress!(size, decompressor, output, compressed)
     decomp_result isa LibDeflateError && return decomp_result
 
     read = decomp_result.read
     written = decomp_result.written
-    read == compressed_len || return LibDeflateErrors.deflate_bad_payload
+    remaining = input.len - UInt(2) - read
+    remaining < UInt(4) && return LibDeflateErrors.input_too_short
+    remaining > UInt(4) && return LibDeflateErrors.zlib_trailing_data
 
     expected_adler32 = ntoh(
-        unsafe_load(Ptr{UInt32}(input_ptr + input.len - UInt(4)))
+        unsafe_load(Ptr{UInt32}(input_ptr + UInt(2) + read))
     )
     checksum_input = ReadableMemory(pointer(output), written)
     unsafe_adler32(checksum_input) == expected_adler32 ||
@@ -95,6 +97,9 @@ end
 Decompress `input` as a zlib stream into `output`. If the exact decompressed size is
 known, pass it as `n_out` to use the faster known-size path. Return the number of bytes
 written or a `LibDeflateError`.
+
+The complete input must contain exactly one zlib stream. Bytes after that stream,
+including a second concatenated zlib stream, return `LibDeflateErrors.zlib_trailing_data`.
 
 On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
 state.
@@ -187,7 +192,8 @@ end
     zlib_compress!(::Compressor, output, input)::Union{LibDeflateError, UInt}
 
 Compress `input` as a zlib stream into `output`, returning the number of bytes written
-or a `LibDeflateError` if the output is too small. The output is never resized.
+or `LibDeflateErrors.insufficient_output_space` if the output is too small. The output
+is never resized.
 
 On error, return a `LibDeflateError`, and leave the content of `output` in an arbitrary
 state.
@@ -247,7 +253,7 @@ See also: [`zlib_compress!`](@ref)
 function unsafe_zlib_compress!(
         compressor::Compressor, output::WriteableMemory, input::ReadableMemory
     )::Union{LibDeflateError, UInt}
-    output.len < UInt(6) && return LibDeflateErrors.zlib_insufficient_space
+    output.len < UInt(6) && return LibDeflateErrors.insufficient_output_space
 
     # Each header is divisible by 31 when interpreted in big-endian order.
     # This is required for the zlib specification.
