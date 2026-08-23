@@ -1,0 +1,17 @@
+[deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
+LibDeflate = "9255714d-24a7-4b30-8ea3-d46a97f7e13b"
+MemoryViews = "a791c907-b98b-4e44-8f4d-e4c2362c6b2f"
+Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+LibDeflate = { path = ".." }
+
+[compat]
+Aqua = "0.8.16"
+CodecZlib = "0.7.9"
+MemoryViews = "0.4.3"
+Mmap = "1.11"
+Test = "1.11"

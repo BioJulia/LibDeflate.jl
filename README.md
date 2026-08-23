@@ -1,48 +1,43 @@
-# LibDeflate.jl
+# <img src="./assets/sticker.svg" width="30%" align="right" /> LibDeflate
 
-![CI](https://github.com/jakobnissen/LibDeflate.jl/workflows/CI/badge.svg)
-[![Codecov](https://codecov.io/gh/jakobnissen/LibDeflate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/jakobnissen/LibDeflate.jl)
+![CI](https://github.com/BioJulia/LibDeflate.jl/workflows/CI/badge.svg)
+[![Codecov](https://codecov.io/gh/jakobnissen/LibDeflate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/BioJulia/LibDeflate.jl)
 
-This package provides Julia bindings for [libdeflate](https://github.com/ebiggers/libdeflate).
+This package provides high-performance functionality for compressing and decompressing raw DEFLATE payloads, as well as zlib and gzip data.
 
-Libdeflate is a heavily optimized implementation of the DEFLATE compression algorithm used in the zip, bgzip and gzip formats. Unlike libz or gzip, libdeflate does not support streaming, and so is intended for use in of files that fit in-memory or for block-compressed files like bgzip. But it is significantly faster than either libz or gzip.
+It presents a Julia abstraction over [`libdeflate`](https://github.com/ebiggers/libdeflate),
+a heavily optimized implementation of the DEFLATE compression algorithm used in the zip, bgzip, and gzip formats.
+Unlike libz or the gzip binary, LibDeflate does not support streaming, so it is intended for use with files that fit in memory or with block-compressed formats such as bgzip.
+It is significantly faster than either libz or gzip.
 
-This package provides simple functionality for working with raw DEFLATE payloads, zlib and gzip data. It is intended for internal use by other packages, not to be used directly by users. Hence, its interface is somewhat small.
+This package's APIs prioritize performance and explicitness over convenience.
+It is trimmable and low-allocation.
 
-:warning: This package ONLY works with in-memory buffers, and ONLY buffers with a length < 2^32 bytes :warning: 
+For more information, see [the documentation](https://biojulia.dev/LibDeflate.jl/stable/),
+or load the package and explore the docstrings of exported and public methods and types.
 
-### Interface
-Many functions have a  "safe" and an "unsafe" variant. The unsafe works with pointers, the safe attempts to convert Julia objects to `ReadableMemory` or `WriteableMemory`, which are simply structs containing pointers.
-When possible, use the safe variants as the overhead is rather small.
+## Quickstart
+```julia
+using LibDeflate
 
-For more details on these functions, read their docstrings which define their API.
-Functions and types without a docstring are internal.
+compressor = Compressor(0x09)
+decompressor = Decompressor()
 
-No functions here are expected to throw errors. On error, they return a `LibDeflateError` object.
+data = "Lorem Ipsum, and so on"
 
-__Common exported types__
-* `Decompressor`: Create an object that decompresses using DEFLATE.
-* `Compressor(N)`: Create an object that compresses using DEFLATE level `N`.
-* `LibDeflateError`: An enum will all LibDeflate errors. Functions are either successful or return this.
-* `ReadableMemory`: A pointer and a length. Constructable from types that are pointer-readable.
-* `WriteableMemory`: A pointer and a length. Constructable from types that are pointer-writeable.
+min_size = deflate_compress_bound(compressor, UInt(ncodeunits(data)))
 
-__Working with DEFLATE payloads__
-* `(unsafe_)decompress!`: DEFLATE decompress payload.
-* `(unsafe_)compress!`: DEFLATE compress payload
+out = zeros(UInt8, Int(min_size))
+n_written = compress!(compressor, out, data)
 
-__Working with gzip files__
-* `(unsafe_)gzip_decompress!`: Decompress gzip data.
-* `(unsafe_)gzip_compress!`: Compress gzip data and/or metadata
+roundtrip = zeros(UInt8, 50)
+result = decompress!(decompressor, roundtrip, view(out, 1:n_written))
 
-* `(unsafe_)parse_gzip_header`: Parse out gzip header
-* `is_valid_extra_data`: Check if some bytes are valid metadata for the gzip "extra" field.
+@assert String(view(roundtrip, 1:result.written)) == data
+```
 
-__Working with Libz files__
-* `(unsafe_)zlib_decompress!`: Decompress zlib data.
-* `(unsafe_)zlib_compress!`: Compress zlib data
-
-__Miscellaneous__
-* `(unsafe)_crc32`: Compute the crc32 checksum of the bytes at `data`. Note that this is _not_ the same algorithm as `crc32c`.
-* `(unsafe)_adler32`: Compute the Adler32 checksum of the bytes at `data`.
+## Questions?
+If you have a question about contributing or using BioJulia software, come
+on over and chat to us on [the Julia Slack workspace](https://julialang.org/slack/), or you can try the
+[Bio category of the Julia discourse site](https://discourse.julialang.org/c/domain/bio).
 

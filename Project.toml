@@ -1,18 +1,14 @@
 name = "LibDeflate"
 uuid = "9255714d-24a7-4b30-8ea3-d46a97f7e13b"
-authors = ["Jakob Nybo Nissen <jakobnybonissen@gmail.com>"]
-version = "0.4.3"
+version = "1.0.0"
+authors = ["Jakob Nybo Andersen <jnandersen@proton.me>"]
 
 [deps]
 libdeflate_jll = "46979653-d7f6-5232-b59e-dd310c4598de"
 
 [compat]
-julia = "1"
+julia = "1.12"
 libdeflate_jll = "1"
 
-[extras]
-CodecZlib = "944b1d66-785c-5afd-91f1-9de20f533193"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test", "CodecZlib"]
+[workspaces]
+projects = ["docs", "test"]

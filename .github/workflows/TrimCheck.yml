@@ -1,0 +1,41 @@
+name: TrimCheck
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trimcheck:
+    name: Trimmability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - name: Cache Julia artifacts
+        uses: julia-actions/cache@v2
+      - name: Run TrimCheck
+        run: |
+          julia --startup-file=no -e '
+            using Pkg
+            Pkg.activate(; temp = true)
+            Pkg.develop(path = ".")
+            Pkg.add(name = "TrimCheck", version = "0.1.4")
+            using TrimCheck: @validate
+            @validate(
+                init = begin
+                    using LibDeflate
+                    include("test/trim.jl")
+                end,
+                exercise_libdeflate_api(),
+            )
+          '

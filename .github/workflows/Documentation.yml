@@ -1,0 +1,28 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - master
+      - release-*
+    tags: '*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  Documenter:
+    name: Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-docdeploy@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
