@@ -1,20 +1,19 @@
-# <img src="./assets/sticker.svg" width="30%" align="right" /> LibDeflate
+# <img src="./assets/sticker.svg" width="30%" align="right" /> LibDeflate.jl
 
-![CI](https://github.com/BioJulia/LibDeflate.jl/workflows/CI/badge.svg)
+[![CI](https://github.com/BioJulia/LibDeflate.jl/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/BioJulia/LibDeflate.jl/actions/workflows/UnitTests.yml)
 [![Codecov](https://codecov.io/gh/jakobnissen/LibDeflate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/BioJulia/LibDeflate.jl)
+[![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://biojulia.github.io/BioJuliaTemplate.jl/stable)
 
-This package provides high-performance functionality for compressing and decompressing raw DEFLATE payloads, as well as zlib and gzip data.
+This package provides high-performance compression and decompression of gzip, zlib and raw DEFLATE payloads, as well as Adler32 and CRC32 checksumming.
+It is a Julia abstraction over [Eric Biggers's C library `libdeflate`](https://github.com/ebiggers/libdeflate).
 
-It presents a Julia abstraction over [`libdeflate`](https://github.com/ebiggers/libdeflate),
-a heavily optimized implementation of the DEFLATE compression algorithm used in the zip, bgzip, and gzip formats.
-Unlike libz or the gzip binary, LibDeflate does not support streaming, so it is intended for use with files that fit in memory or with block-compressed formats such as bgzip.
-It is significantly faster than either libz or gzip.
+LibDeflate.jl outperforms CodecZlib.jl and is on par with isa-l. However, unlike CodecZlib.jl, LibDeflate does not support streaming, so it is intended for use with files that fit in memory or with block-compressed formats such as bgzip.
 
 This package's APIs prioritize performance and explicitness over convenience.
 It is trimmable and low-allocation.
 
 For more information, see [the documentation](https://biojulia.dev/LibDeflate.jl/stable/),
-or load the package and explore the docstrings of exported and public methods and types.
+or load the package and explore the docstrings of public functions and types.
 
 ## Quickstart
 ```julia
