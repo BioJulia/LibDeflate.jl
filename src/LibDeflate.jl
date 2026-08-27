@@ -196,7 +196,7 @@ function WriteableMemory(x::Union{Array{UInt8}, Memory{UInt8}})
 end
 
 function WriteableMemory(x::MutableDenseByteSubArray)
-    return WriteableMemory(pointer(x), UInt(length(x)))
+    return unsafe_writeable_memory(pointer(x), UInt(length(x)))
 end
 
 """
@@ -492,7 +492,7 @@ function unsafe_decompress!(
         n_out::UInt,
     )::Union{LibDeflateError, @NamedTuple{read::UInt, written::UInt}}
     output.len < n_out && return LibDeflateErrors.insufficient_output_space
-    exact_output = WriteableMemory(pointer(output), n_out)
+    exact_output = unsafe_writeable_memory(pointer(output), n_out)
     return _unsafe_decompress!(Base.HasLength(), decompressor, exact_output, input)
 end
 

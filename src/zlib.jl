@@ -35,7 +35,7 @@ function unsafe_zlib_decompress!(
         n_out::UInt,
     )::Union{LibDeflateError, UInt}
     output.len < n_out && return LibDeflateErrors.insufficient_output_space
-    exact_output = WriteableMemory(pointer(output), n_out)
+    exact_output = unsafe_writeable_memory(pointer(output), n_out)
     return _unsafe_zlib_decompress!(
         Base.HasLength(), decompressor, exact_output, input
     )
@@ -66,7 +66,7 @@ function _unsafe_zlib_decompress!(
     iszero(mod(bswap(header), UInt16(31))) ||
         return LibDeflateErrors.zlib_bad_header_checksum
 
-    compressed = ReadableMemory(input_ptr + 2, input.len - UInt(2))
+    compressed = unsafe_readable_memory(input_ptr + 2, input.len - UInt(2))
     decomp_result = _unsafe_decompress!(size, decompressor, output, compressed)
     decomp_result isa LibDeflateError && return decomp_result
 
@@ -79,7 +79,7 @@ function _unsafe_zlib_decompress!(
     expected_adler32 = ntoh(
         unsafe_load(Ptr{UInt32}(input_ptr + UInt(2) + read))
     )
-    checksum_input = ReadableMemory(pointer(output), written)
+    checksum_input = unsafe_readable_memory(pointer(output), written)
     unsafe_adler32(checksum_input) == expected_adler32 ||
         return LibDeflateErrors.zlib_bad_adler32
 
@@ -261,7 +261,7 @@ function unsafe_zlib_compress!(
 
     output_ptr = Ptr{UInt8}(pointer(output))
     unsafe_store!(Ptr{UInt16}(output_ptr), htol(header))
-    compressed_output = WriteableMemory(output_ptr + 2, output.len - UInt(6))
+    compressed_output = unsafe_writeable_memory(output_ptr + 2, output.len - UInt(6))
     n_bytes = unsafe_compress!(compressor, compressed_output, input)
     n_bytes isa LibDeflateError && return n_bytes
 
