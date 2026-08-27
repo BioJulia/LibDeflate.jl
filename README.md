@@ -1,7 +1,7 @@
 # <img src="./assets/sticker.svg" width="30%" align="right" /> LibDeflate.jl
 
 [![CI](https://github.com/BioJulia/LibDeflate.jl/actions/workflows/UnitTests.yml/badge.svg)](https://github.com/BioJulia/LibDeflate.jl/actions/workflows/UnitTests.yml)
-[![Codecov](https://codecov.io/gh/jakobnissen/LibDeflate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/BioJulia/LibDeflate.jl)
+[![Codecov](https://codecov.io/gh/BioJulia/LibDeflate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/BioJulia/LibDeflate.jl)
 [![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://biojulia.github.io/LibDeflate.jl/stable)
 
 This package provides high-performance compression and decompression of gzip, zlib and raw DEFLATE payloads, as well as Adler32 and CRC32 checksumming.
