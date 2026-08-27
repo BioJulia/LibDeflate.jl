@@ -424,7 +424,7 @@ function _unsafe_parse_gzip_header(
         # +---+---+
         index + UInt(1) <= max_len ||
             return LibDeflateErrors.input_too_short
-        crc_input = ReadableMemory(ptr + one(UInt), index - one(UInt))
+        crc_input = unsafe_readable_memory(ptr + one(UInt), index - one(UInt))
         crc_obs_16 = unsafe_crc32(crc_input) % UInt16
         crc_exp_16 = ltoh(unsafe_load(Ptr{UInt16}(ptr + index)))
         crc_obs_16 == crc_exp_16 || return LibDeflateErrors.gzip_bad_header_crc16
@@ -634,7 +634,7 @@ function gzip_decompress!(
     return GC.@preserve input output begin
         writable = WriteableMemory(output)
         writable.len < n_out && return LibDeflateErrors.insufficient_output_space
-        exact_output = WriteableMemory(pointer(writable), n_out)
+        exact_output = unsafe_writeable_memory(pointer(writable), n_out)
         _unsafe_gzip_decompress!(
             Base.HasLength(), decompressor, exact_output, ReadableMemory(input), extra_fields
         )
@@ -682,7 +682,7 @@ function unsafe_gzip_decompress!(
     )::Union{LibDeflateError, GzipDecompressResult}
     empty!(extra_fields)
     output.len < n_out && return LibDeflateErrors.insufficient_output_space
-    exact_output = WriteableMemory(pointer(output), n_out)
+    exact_output = unsafe_writeable_memory(pointer(output), n_out)
     return _unsafe_gzip_decompress!(
         Base.HasLength(), decompressor, exact_output, in, extra_fields
     )
@@ -807,7 +807,7 @@ function _unsafe_gzip_decompress!(
     len < nonheader_min_len && return LibDeflateErrors.input_too_short
 
     # First decompress header
-    header_input = ReadableMemory(pointer(in), len - nonheader_min_len)
+    header_input = unsafe_readable_memory(pointer(in), len - nonheader_min_len)
     hdr_result = _unsafe_parse_gzip_header(header_input, extra_fields)
     hdr_result isa LibDeflateError && return hdr_result
     header_len = hdr_result.read
@@ -815,7 +815,7 @@ function _unsafe_gzip_decompress!(
 
     # The trailer cannot be found from the end of the input, since another gzip
     # member may follow it. Use libdeflate's consumed-input count to locate it.
-    compressed = ReadableMemory(pointer(in) + header_len, len - header_len)
+    compressed = unsafe_readable_memory(pointer(in) + header_len, len - header_len)
     decomp_result = _unsafe_decompress!(size, decompressor, output, compressed)
     decomp_result isa LibDeflateError && return decomp_result
     consumed = decomp_result.read
@@ -833,7 +833,7 @@ function _unsafe_gzip_decompress!(
 
     # Check for CRC checksum and validate it
     crc_exp = ltoh(unsafe_load(Ptr{UInt32}(trailer_ptr)))
-    crc_input = ReadableMemory(pointer(output), uncompressed_size)
+    crc_input = unsafe_readable_memory(pointer(output), uncompressed_size)
     crc_obs = unsafe_crc32(crc_input)
     crc_exp == crc_obs || return LibDeflateErrors.gzip_bad_crc32
 
@@ -969,10 +969,10 @@ function _unsafe_gzip_decompress_all!(
         # A malformed member may increase the length of `extra_fields`;
         # we keep track of the length here to reset it upon an error
         previous_extra_count = length(extra_fields)
-        member_input = ReadableMemory(
+        member_input = unsafe_readable_memory(
             pointer(input) + read, input_size - read
         )
-        member_output = WriteableMemory(
+        member_output = unsafe_writeable_memory(
             pointer(output) + written, output_size - written
         )
         result = _unsafe_gzip_decompress!(
@@ -1292,7 +1292,7 @@ function unsafe_gzip_compress!(
 
     # Add in CRC16
     if header_crc
-        crc_input = ReadableMemory(ptr + one(UInt), index - one(UInt))
+        crc_input = unsafe_readable_memory(ptr + one(UInt), index - one(UInt))
         header_crc16 = unsafe_crc32(crc_input) % UInt16
         unsafe_store!(Ptr{UInt16}(ptr + index), htol(header_crc16))
         index += UInt(2)
@@ -1300,7 +1300,7 @@ function unsafe_gzip_compress!(
 
     # Add in compressed data
     remaining_out_data = out_len - index + one(UInt) - UInt(8) # tail
-    compress_to = WriteableMemory(ptr + index, remaining_out_data)
+    compress_to = unsafe_writeable_memory(ptr + index, remaining_out_data)
     n_compressed = unsafe_compress!(compressor, compress_to, in)
     n_compressed isa LibDeflateError && return n_compressed
     index += n_compressed
