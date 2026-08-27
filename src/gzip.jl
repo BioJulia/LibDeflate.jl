@@ -554,7 +554,7 @@ const GzipDecompressAllResult = @NamedTuple{
         ::Decompressor, output, input,
         extra_fields::Vector{GzipExtraField}
     )::Union{GzipDecompressResult, LibDeflateError}
-    
+
     gzip_decompress!(
         ::Decompressor, output, input, n_out::UInt,
         extra_fields::Vector{GzipExtraField}
@@ -686,6 +686,112 @@ function unsafe_gzip_decompress!(
     return _unsafe_gzip_decompress!(
         Base.HasLength(), decompressor, exact_output, in, extra_fields
     )
+end
+
+"""
+    gzip_isize_decompress!(
+        ::Decompressor, output::Vector{UInt8}, input,
+        extra_fields::Vector{GzipExtraField}
+    )::Union{GzipDecompressResult, LibDeflateError}
+
+Similar to `gzip_decompress!`, with the following semantic differences:
+* The input must contain exactly one gzip member, with no trailing data.
+* The decompressed payload must be smaller than 2^32 bytes, else fail,
+  possibly with `LibDeflateErrors.insufficient_output_space` even if there
+  is enough space in `output`.
+* Automatically resize `output` to fit. On success, `output` is sized to the exact
+  decompressed payload. On error, `output` is sized to at most `typemax(UInt32)`,
+  and has arbitrary content.
+
+See also: [`unsafe_gzip_isize_decompress!`](@ref), [`gzip_decompress!`](@ref)
+
+# Examples:
+```jldoctest
+julia> compressed = vcat(
+           b"\\x1f\\x8b\\x08\\0\\0\\0\\0\\0\\xff\\0\\x01\\x0d\\0\\xf2\\xff\\x48\\x65\\x6c",
+           b"\\x6c\\x6f\\x2c\\x20\\x77\\x6f\\x72\\x6c\\x64\\x21\\xe6\\xc6\\xe6\\xeb\\x0d\\0\\0\\0",
+       ); # gzip "Hello, world!"
+
+julia> out = UInt8[];
+
+julia> fields = GzipExtraField[];
+
+julia> gzip_isize_decompress!(decompressor, out, compressed, fields);
+
+julia> String(out)
+"Hello, world!"
+```
+"""
+function gzip_isize_decompress!(
+        decompressor::Decompressor,
+        output::Vector{UInt8},
+        input,
+        extra_fields::Vector{GzipExtraField},
+    )::Union{LibDeflateError, GzipDecompressResult}
+    empty!(extra_fields)
+    return GC.@preserve input begin
+        _unsafe_gzip_isize_decompress!(
+            decompressor, output, ReadableMemory(input), extra_fields
+        )
+    end
+end
+
+"""
+    unsafe_gzip_isize_decompress!(
+        ::Decompressor, output::Vector{UInt8}, input::ReadableMemory,
+        extra_fields::Vector{GzipExtraField}
+    )::Union{GzipDecompressResult, LibDeflateError}
+
+Low-level variant of [`gzip_isize_decompress!`](@ref) that operates directly on a
+`ReadableMemory` input. It has the same behavior, return value, and errors
+as `gzip_isize_decompress!`.
+
+The caller must keep the allocation referenced by `input` alive, typically by wrapping
+both construction of the memory wrapper and this call in `GC.@preserve`. `input` and
+`output` must not overlap (alias).
+
+See also: [`gzip_isize_decompress!`](@ref)
+"""
+function unsafe_gzip_isize_decompress!(
+        decompressor::Decompressor,
+        output::Vector{UInt8},
+        input::ReadableMemory,
+        extra_fields::Vector{GzipExtraField},
+    )::Union{LibDeflateError, GzipDecompressResult}
+    empty!(extra_fields)
+    return _unsafe_gzip_isize_decompress!(decompressor, output, input, extra_fields)
+end
+
+function _unsafe_gzip_isize_decompress!(
+        decompressor::Decompressor,
+        output::Vector{UInt8},
+        input::ReadableMemory,
+        extra_fields::Vector{GzipExtraField},
+    )::Union{LibDeflateError, GzipDecompressResult}
+
+    # The existing gzip decompressor needs at least two DEFLATE bytes and an
+    # eight-byte trailer after the header. Avoid reading ISIZE for shorter input.
+    input.len < UInt(10) && return LibDeflateErrors.input_too_short
+
+    isize_ptr = Ptr{UInt8}(pointer(input)) + input.len - UInt(4)
+    n_out = UInt(ltoh(unsafe_load(Ptr{UInt32}(isize_ptr))))
+    n_out > typemax(Int) % UInt && return LibDeflateErrors.overflow
+    resize!(output, n_out % Int)
+
+    result = GC.@preserve output _unsafe_gzip_decompress!(
+        Base.HasLength(),
+        decompressor,
+        WriteableMemory(output),
+        input,
+        extra_fields,
+    )
+    # If there are multiple members in the input, the last member COULD have
+    # a matching isize, which means the isize check does not fail.
+    # To guard against this, check the entire input was consumed
+    # (i.e. the input is one single member)
+    result isa GzipDecompressResult && result.read != input.len &&
+        return LibDeflateErrors.deflate_bad_payload
+    return result
 end
 
 function _unsafe_gzip_decompress!(

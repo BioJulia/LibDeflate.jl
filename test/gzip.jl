@@ -580,6 +580,59 @@ complex_test_case = vcat(
     @test_throws MethodError gzip_decompress!(decompressor, outdata, compressed)
 end
 
+@testset "ISIZE decompression" begin
+    decompressor = Decompressor()
+    extra_fields = GzipExtraField[]
+
+    for data in test_data
+        compressed = transcode(GzipCompressor, data)
+        expected = Vector{UInt8}(data)
+
+        output = fill(UInt8(0xff), 3)
+        result = gzip_isize_decompress!(decompressor, output, compressed, extra_fields)
+        @test result isa GzipDecompressResult
+        @test result.written == length(expected)
+        @test result.read == length(compressed)
+        @test output == expected
+
+        output = fill(UInt8(0xff), length(expected) + 3)
+        result = GC.@preserve compressed unsafe_gzip_isize_decompress!(
+            decompressor, output, ReadableMemory(compressed), extra_fields
+        )
+        @test result isa GzipDecompressResult
+        @test result.written == length(expected)
+        @test result.read == length(compressed)
+        @test output == expected
+    end
+
+    output = UInt8[]
+    result = gzip_isize_decompress!(
+        decompressor, output, complex_test_case, extra_fields
+    )
+    @test output == Vector{UInt8}(codeunits("Abracadabra"))
+    test_header_example(complex_test_case, extra_fields, result.header)
+
+    original_output = fill(UInt8(0xff), 3)
+    sentinel = make_empty_extra_field()
+    extra_fields = [sentinel]
+    @test gzip_isize_decompress!(
+        decompressor, original_output, UInt8[], extra_fields
+    ) == LibDeflateErrors.input_too_short
+    @test original_output == fill(UInt8(0xff), 3)
+    @test isempty(extra_fields)
+
+    compressed = transcode(GzipCompressor, "trailing payload")
+    trailing_data = vcat(compressed, compressed[(end - 3):end])
+    @test gzip_isize_decompress!(
+        decompressor, UInt8[], trailing_data, extra_fields
+    ) == LibDeflateErrors.deflate_bad_payload
+    @test GC.@preserve trailing_data unsafe_gzip_isize_decompress!(
+        decompressor, UInt8[], ReadableMemory(trailing_data), extra_fields
+    ) == LibDeflateErrors.deflate_bad_payload
+
+    @test_throws MethodError gzip_isize_decompress!(decompressor, UInt8[], compressed)
+end
+
 @testset "All-member decompression" begin
     decompressor = Decompressor()
     parts = ["first member", "", "third member"]
